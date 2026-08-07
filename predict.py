@@ -1,31 +1,38 @@
 """
-===============================================================
+============================================================
 TalentMatch AI
-
 Production Prediction Engine
+============================================================
 
 Responsibilities:
 
-    • Load all trained artifacts once
-    • Semantic Job Matching
-    • TF-IDF Job Matching
-    • Hybrid Job Ranking
-    • Interview Question Retrieval
+• Load trained artifacts once
+• Semantic job matching
+• TF-IDF job matching
+• Hybrid job ranking
+• Interview question retrieval
 
 Designed for:
-    Render Free
-    512 MB RAM
 
-The model is loaded once through a singleton engine.
-===============================================================
+Render Free
+512 MB RAM
+CPU inference
+
+Memory strategy:
+
+• Singleton model
+• CPU only
+• float32 embeddings
+• No unnecessary embedding copies
+• Limited result counts
+• No duplicate model instances
+• Temporary objects released immediately
+============================================================
 """
-
-# ============================================================
-# Imports
-# ============================================================
 
 import gzip
 import json
+import gc
 
 import joblib
 import numpy as np
@@ -52,18 +59,10 @@ from config import (
 
 
 # ============================================================
-# Singleton Prediction Engine
+# Prediction Engine
 # ============================================================
 
 class PredictionEngine:
-
-    """
-    Loads the AI model and trained artifacts once.
-
-    This is important for Render Free because repeatedly
-    loading the SentenceTransformer model would consume
-    unnecessary memory and CPU.
-    """
 
     _instance = None
 
@@ -88,15 +87,7 @@ class PredictionEngine:
             return
 
         print(
-            "=================================================="
-        )
-
-        print(
-            "Loading TalentMatch AI prediction engine..."
-        )
-
-        print(
-            "=================================================="
+            "Starting TalentMatch AI prediction engine..."
         )
 
         # ====================================================
@@ -112,6 +103,11 @@ class PredictionEngine:
             device=DEVICE
         )
 
+        # Make sure inference does not create
+        # unnecessary gradients.
+
+        self.model.eval()
+
         # ====================================================
         # Job Embeddings
         # ====================================================
@@ -120,11 +116,27 @@ class PredictionEngine:
             "Loading job embeddings..."
         )
 
-        self.job_embeddings = np.load(
+        loaded_jobs = np.load(
             JOB_EMBEDDINGS
-        )["embeddings"].astype(
-            np.float32
         )
+
+        self.job_embeddings = loaded_jobs[
+            "embeddings"
+        ]
+
+        # Keep only one usable float32 copy.
+
+        if self.job_embeddings.dtype != np.float32:
+
+            self.job_embeddings = (
+                self.job_embeddings.astype(
+                    np.float32
+                )
+            )
+
+        # Release NPZ container.
+
+        del loaded_jobs
 
         # ====================================================
         # Job Metadata
@@ -138,37 +150,12 @@ class PredictionEngine:
             JOB_METADATA
         )
 
-        # ----------------------------------------------------
-        # IMPORTANT COMPATIBILITY FIX
-        #
-        # Normalize all metadata column names to lowercase.
-        #
-        # This prevents problems if the training dataset used:
-        #
-        # Category
-        # Description
-        # Requirements
-        # Benefits
-        #
-        # or:
-        #
-        # category
-        # description
-        # requirements
-        # benefits
-        # ----------------------------------------------------
-
         self.job_metadata.columns = [
             str(column)
             .strip()
             .lower()
             for column in self.job_metadata.columns
         ]
-
-        print(
-            "Job metadata columns:",
-            list(self.job_metadata.columns)
-        )
 
         # ====================================================
         # Interview Embeddings
@@ -178,11 +165,26 @@ class PredictionEngine:
             "Loading interview embeddings..."
         )
 
-        self.interview_embeddings = np.load(
+        loaded_interviews = np.load(
             INTERVIEW_EMBEDDINGS
-        )["embeddings"].astype(
-            np.float32
         )
+
+        self.interview_embeddings = (
+            loaded_interviews["embeddings"]
+        )
+
+        if (
+            self.interview_embeddings.dtype
+            != np.float32
+        ):
+
+            self.interview_embeddings = (
+                self.interview_embeddings.astype(
+                    np.float32
+                )
+            )
+
+        del loaded_interviews
 
         # ====================================================
         # Interview Metadata
@@ -196,7 +198,6 @@ class PredictionEngine:
             INTERVIEW_METADATA
         )
 
-        # Normalize interview metadata column names too.
         self.interview_metadata.columns = [
             str(column)
             .strip()
@@ -205,11 +206,11 @@ class PredictionEngine:
         ]
 
         # ====================================================
-        # TF-IDF Model
+        # TF-IDF
         # ====================================================
 
         print(
-            "Loading TF-IDF model..."
+            "Loading TF-IDF vectorizer..."
         )
 
         self.vectorizer = joblib.load(
@@ -217,17 +218,12 @@ class PredictionEngine:
         )
 
         # ====================================================
-        # Build TF-IDF Job Matrix
+        # TF-IDF Job Matrix
         # ====================================================
 
         print(
-            "Building TF-IDF job matrix..."
+            "Building TF-IDF job index..."
         )
-
-        # Use only available text columns.
-        #
-        # This is safer than assuming every dataset contains
-        # exactly the same fields.
 
         text_columns = [
             column
@@ -257,9 +253,6 @@ class PredictionEngine:
 
         else:
 
-            # Fallback:
-            # combine every metadata column.
-
             job_documents = (
                 self.job_metadata
                 .fillna("")
@@ -276,8 +269,6 @@ class PredictionEngine:
                 job_documents
             )
         )
-
-        # Free temporary memory.
 
         del job_documents
 
@@ -299,22 +290,16 @@ class PredictionEngine:
                 json.load(f)
             )
 
+        gc.collect()
+
         # ====================================================
-        # Final State
+        # Ready
         # ====================================================
 
         self._loaded = True
 
         print(
-            "=================================================="
-        )
-
-        print(
             "TalentMatch AI prediction engine ready."
-        )
-
-        print(
-            "=================================================="
         )
 
     # ========================================================
@@ -323,27 +308,19 @@ class PredictionEngine:
 
     def embed(
         self,
-        text
+        text: str
     ):
-        """
-        Convert resume text into a normalized
-        MiniLM embedding.
-        """
 
         embedding = self.model.encode(
-
             text,
-
             normalize_embeddings=True,
-
             convert_to_numpy=True,
-
             show_progress_bar=False
-
         )
 
-        return embedding.astype(
-            np.float32
+        return np.asarray(
+            embedding,
+            dtype=np.float32
         )
 
     # ========================================================
@@ -355,29 +332,30 @@ class PredictionEngine:
         resume_text,
         top_k=TOP_K_JOBS
     ):
-        """
-        Perform semantic job matching.
-        """
+
+        top_k = min(
+            max(1, int(top_k)),
+            TOP_K_JOBS
+        )
 
         query = self.embed(
             resume_text
         )
 
         scores = cosine_similarity(
-
-            query.reshape(
-                1,
-                -1
-            ),
-
+            query.reshape(1, -1),
             self.job_embeddings
-
         )[0]
 
-        indices = np.argsort(
-            scores
-        )[::-1][
-            :top_k
+        indices = np.argpartition(
+            scores,
+            -top_k
+        )[-top_k:]
+
+        indices = indices[
+            np.argsort(
+                scores[indices]
+            )[::-1]
         ]
 
         results = []
@@ -385,20 +363,15 @@ class PredictionEngine:
         for idx in indices:
 
             row = self.job_metadata.iloc[
-                idx
+                int(idx)
             ]
 
             results.append({
 
                 "score": round(
-                    float(
-                        scores[idx]
-                    ),
+                    float(scores[idx]),
                     4
                 ),
-
-                # FIXED:
-                # Metadata columns are now lowercase.
 
                 "category": row.get(
                     "category",
@@ -419,34 +392,31 @@ class PredictionEngine:
                     "benefits",
                     ""
                 )
-
             })
+
+        del query
+        del scores
+
+        gc.collect()
 
         return results
 
     # ========================================================
-    # TF-IDF Scores
+    # TF-IDF
     # ========================================================
 
     def tfidf_scores(
         self,
         resume_text
     ):
-        """
-        Compute lexical similarity between the resume
-        and all job descriptions.
-        """
 
         query = self.vectorizer.transform(
             [resume_text]
         )
 
         scores = cosine_similarity(
-
             query,
-
             self.job_tfidf_matrix
-
         )[0]
 
         return scores
@@ -460,18 +430,14 @@ class PredictionEngine:
         resume_text,
         top_k=TOP_K_JOBS
     ):
-        """
-        Combine:
 
-            Semantic similarity
-            +
-            TF-IDF keyword similarity
-
-        into a single hybrid score.
-        """
+        top_k = min(
+            max(1, int(top_k)),
+            TOP_K_JOBS
+        )
 
         # ----------------------------------------------------
-        # Semantic similarity
+        # Semantic score
         # ----------------------------------------------------
 
         semantic = self.embed(
@@ -479,18 +445,12 @@ class PredictionEngine:
         )
 
         semantic_scores = cosine_similarity(
-
-            semantic.reshape(
-                1,
-                -1
-            ),
-
+            semantic.reshape(1, -1),
             self.job_embeddings
-
         )[0]
 
         # ----------------------------------------------------
-        # TF-IDF similarity
+        # TF-IDF score
         # ----------------------------------------------------
 
         lexical_scores = self.tfidf_scores(
@@ -502,25 +462,29 @@ class PredictionEngine:
         # ----------------------------------------------------
 
         final_scores = (
-
             semantic_scores
             * SEMANTIC_WEIGHT
-
             +
-
             lexical_scores
             * TFIDF_WEIGHT
-
         )
 
         # ----------------------------------------------------
-        # Top jobs
+        # Efficient top-k selection
+        #
+        # np.argpartition avoids fully sorting thousands
+        # of jobs.
         # ----------------------------------------------------
 
-        indices = np.argsort(
-            final_scores
-        )[::-1][
-            :top_k
+        indices = np.argpartition(
+            final_scores,
+            -top_k
+        )[-top_k:]
+
+        indices = indices[
+            np.argsort(
+                final_scores[indices]
+            )[::-1]
         ]
 
         jobs = []
@@ -528,33 +492,25 @@ class PredictionEngine:
         for idx in indices:
 
             row = self.job_metadata.iloc[
-                idx
+                int(idx)
             ]
 
             jobs.append({
 
                 "score": round(
-                    float(
-                        final_scores[idx]
-                    ),
+                    float(final_scores[idx]),
                     4
                 ),
 
                 "semantic_score": round(
-                    float(
-                        semantic_scores[idx]
-                    ),
+                    float(semantic_scores[idx]),
                     4
                 ),
 
                 "tfidf_score": round(
-                    float(
-                        lexical_scores[idx]
-                    ),
+                    float(lexical_scores[idx]),
                     4
                 ),
-
-                # FIXED METADATA ACCESS
 
                 "category": row.get(
                     "category",
@@ -575,13 +531,23 @@ class PredictionEngine:
                     "benefits",
                     ""
                 )
-
             })
+
+        # ----------------------------------------------------
+        # Release temporary arrays
+        # ----------------------------------------------------
+
+        del semantic
+        del semantic_scores
+        del lexical_scores
+        del final_scores
+
+        gc.collect()
 
         return jobs
 
     # ========================================================
-    # Interview Question Retrieval
+    # Interview Questions
     # ========================================================
 
     def interview_questions(
@@ -589,30 +555,30 @@ class PredictionEngine:
         resume_text,
         top_k=TOP_K_INTERVIEWS
     ):
-        """
-        Retrieve interview questions most relevant
-        to the candidate's resume.
-        """
+
+        top_k = min(
+            max(1, int(top_k)),
+            TOP_K_INTERVIEWS
+        )
 
         query = self.embed(
             resume_text
         )
 
         scores = cosine_similarity(
-
-            query.reshape(
-                1,
-                -1
-            ),
-
+            query.reshape(1, -1),
             self.interview_embeddings
-
         )[0]
 
-        indices = np.argsort(
-            scores
-        )[::-1][
-            :top_k
+        indices = np.argpartition(
+            scores,
+            -top_k
+        )[-top_k:]
+
+        indices = indices[
+            np.argsort(
+                scores[indices]
+            )[::-1]
         ]
 
         questions = []
@@ -620,15 +586,13 @@ class PredictionEngine:
         for idx in indices:
 
             row = self.interview_metadata.iloc[
-                idx
+                int(idx)
             ]
 
             questions.append({
 
                 "score": round(
-                    float(
-                        scores[idx]
-                    ),
+                    float(scores[idx]),
                     4
                 ),
 
@@ -661,14 +625,18 @@ class PredictionEngine:
                     "experience",
                     ""
                 )
-
             })
+
+        del query
+        del scores
+
+        gc.collect()
 
         return questions
 
 
 # ============================================================
-# Global Prediction Engine
+# Global Singleton
 # ============================================================
 
 engine = PredictionEngine()
