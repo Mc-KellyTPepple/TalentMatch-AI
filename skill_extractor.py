@@ -1,27 +1,48 @@
 """
-===============================================================
 TalentMatch AI
 Skill Extraction Engine
 
-Purpose:
-    Extract relevant skills from uploaded resumes using the
-    skill artifacts generated during training.
+Purpose
+-------
+Extract relevant skills from uploaded resumes using the
+trained skill artifacts generated during model training.
 
-Designed for:
-    - Free Render deployment
-    - 512 MB RAM
-    - Low CPU usage
-    - Fast inference
-    - No model retraining
-    - No large NLP libraries
+Artifacts used
+--------------
+models/
+    skills.json.gz
+    skill_frequency.json.gz
+    synonyms.json.gz
 
-Uses:
-    models/
-        skills.json.gz
-        skill_frequency.json.gz
-        synonyms.json.gz
+Designed for
+------------
+- Render Free
+- 512 MB RAM
+- CPU inference
+- Low CPU usage
+- Fast repeated requests
+- No model retraining
+- No heavyweight NLP libraries
+- No permanent resume storage
 
-===============================================================
+Architecture
+------------
+Resume text
+    ↓
+Text normalization
+    ↓
+Skill / synonym lookup
+    ↓
+Phrase matching
+    ↓
+Canonical skill mapping
+    ↓
+Frequency-based ranking
+    ↓
+Extracted skills
+
+The module contains no machine-learning model.
+It therefore adds very little memory overhead.
 """
 
 from __future__ import annotations
@@ -29,33 +50,59 @@ from __future__ import annotations
 import gzip
 import json
 import re
-from pathlib import Path
+
 from functools import lru_cache
 from typing import Dict, List, Set
 
+from config import MODELS_DIR
 
-# ==============================================================
-# Configuration
-# ==============================================================
 
-BASE_DIR = Path(__file__).resolve().parent
-
-MODELS_DIR = BASE_DIR / "models"
+# ============================================================
+# Artifact Paths
+# ============================================================
 
 SKILLS_FILE = MODELS_DIR / "skills.json.gz"
-FREQUENCY_FILE = MODELS_DIR / "skill_frequency.json.gz"
-SYNONYMS_FILE = MODELS_DIR / "synonyms.json.gz"
+
+FREQUENCY_FILE = (
+    MODELS_DIR / "skill_frequency.json.gz"
+)
+
+SYNONYMS_FILE = (
+    MODELS_DIR / "synonyms.json.gz"
+)
 
 
-# ==============================================================
-# Text normalization
-# ==============================================================
+# ============================================================
+# Limits
+# ============================================================
 
-def normalize_text(text: str) -> str:
+DEFAULT_MAX_SKILLS = 100
+
+MAX_ALLOWED_SKILLS = 250
+
+
+# ============================================================
+# Text Normalization
+# ============================================================
+
+def normalize_text(
+    text: str
+) -> str:
     """
-    Normalize resume text for efficient skill matching.
+    Normalize resume text for skill matching.
 
-    This intentionally avoids heavyweight NLP libraries.
+    The implementation intentionally avoids NLP libraries.
+
+    Technical characters such as:
+
+        C++
+        C#
+        .NET
+        Node.js
+        C/C++
+        REST/API
+
+    are preserved where possible.
     """
 
     if not text:
@@ -63,20 +110,44 @@ def normalize_text(text: str) -> str:
 
     text = str(text).lower()
 
-    # Normalize common separators.
-    text = text.replace("\n", " ")
-    text = text.replace("\r", " ")
-    text = text.replace("\t", " ")
+    # --------------------------------------------------------
+    # Normalize whitespace
+    # --------------------------------------------------------
 
-    # Preserve characters useful for technical skills:
-    # C++, C#, .NET, Node.js, etc.
+    text = text.replace(
+        "\r\n",
+        " "
+    )
+
+    text = text.replace(
+        "\r",
+        " "
+    )
+
+    text = text.replace(
+        "\n",
+        " "
+    )
+
+    text = text.replace(
+        "\t",
+        " "
+    )
+
+    # --------------------------------------------------------
+    # Preserve characters commonly used by technical skills.
+    # --------------------------------------------------------
+
     text = re.sub(
         r"[^a-z0-9+#./&\-\s]",
         " ",
         text
     )
 
-    # Collapse repeated whitespace.
+    # --------------------------------------------------------
+    # Collapse whitespace
+    # --------------------------------------------------------
+
     text = re.sub(
         r"\s+",
         " ",
@@ -86,13 +157,22 @@ def normalize_text(text: str) -> str:
     return text.strip()
 
 
-# ==============================================================
-# Load compressed artifacts
-# ==============================================================
+# ============================================================
+# Safe GZIP JSON Loader
+# ============================================================
 
-def _load_gzip_json(path: Path, default):
+def _load_gzip_json(
+    path,
+    default
+):
     """
     Safely load a gzip-compressed JSON artifact.
+
+    If the artifact does not exist or cannot be read,
+    the supplied default value is returned.
+
+    This prevents the entire application from crashing
+    because an optional skill artifact is unavailable.
     """
 
     if not path.exists():
@@ -104,25 +184,35 @@ def _load_gzip_json(path: Path, default):
             path,
             "rt",
             encoding="utf-8"
-        ) as f:
+        ) as file:
 
-            return json.load(f)
+            return json.load(file)
 
-    except Exception:
+    except Exception as exc:
+
+        print(
+            f"Warning: unable to load "
+            f"{path.name}: {exc}"
+        )
+
         return default
 
 
-# ==============================================================
-# Skill database
-# ==============================================================
+# ============================================================
+# Skill Vocabulary
+# ============================================================
 
 @lru_cache(maxsize=1)
 def load_skills() -> List[str]:
     """
     Load the trained skill vocabulary.
 
-    Cached after first load so the file is not repeatedly read
-    for every resume request.
+    The result is cached after the first request.
+
+    Returns
+    -------
+    List[str]
+        Normalized unique skill names.
     """
 
     skills = _load_gzip_json(
@@ -130,26 +220,58 @@ def load_skills() -> List[str]:
         []
     )
 
-    if not isinstance(skills, list):
+    if not isinstance(
+        skills,
+        list
+    ):
         return []
 
-    # Normalize and remove duplicates.
-    skills = {
-        str(skill).strip().lower()
-        for skill in skills
-        if str(skill).strip()
-    }
+    normalized: Set[str] = set()
+
+    for skill in skills:
+
+        if skill is None:
+            continue
+
+        skill = str(
+            skill
+        ).strip().lower()
+
+        if skill:
+            normalized.add(
+                skill
+            )
+
+    # --------------------------------------------------------
+    # Longer phrases first.
+    #
+    # Example:
+    #
+    # "machine learning"
+    # before
+    # "learning"
+    # --------------------------------------------------------
 
     return sorted(
-        skills,
-        key=lambda x: (-len(x), x)
+        normalized,
+        key=lambda value: (
+            -len(value),
+            value
+        )
     )
 
+
+# ============================================================
+# Skill Frequency
+# ============================================================
 
 @lru_cache(maxsize=1)
 def load_skill_frequency() -> Dict[str, int]:
     """
     Load skill frequency information generated during training.
+
+    Frequency is used only for ranking extracted skills.
+    It does not determine whether a skill exists.
     """
 
     data = _load_gzip_json(
@@ -157,20 +279,58 @@ def load_skill_frequency() -> Dict[str, int]:
         {}
     )
 
-    if not isinstance(data, dict):
+    if not isinstance(
+        data,
+        dict
+    ):
         return {}
 
-    return {
-        str(k).lower(): int(v)
-        for k, v in data.items()
-        if str(k).strip()
-    }
+    frequency = {}
 
+    for key, value in data.items():
+
+        try:
+
+            normalized_key = str(
+                key
+            ).strip().lower()
+
+            if not normalized_key:
+                continue
+
+            frequency[
+                normalized_key
+            ] = max(
+                0,
+                int(value)
+            )
+
+        except (
+            TypeError,
+            ValueError
+        ):
+
+            continue
+
+    return frequency
+
+
+# ============================================================
+# Synonym Database
+# ============================================================
 
 @lru_cache(maxsize=1)
 def load_synonyms() -> Dict[str, List[str]]:
     """
-    Load the synonym relationships generated during training.
+    Load trained skill synonym relationships.
+
+    Example:
+
+        machine learning:
+            ml
+            machine-learning
+
+    The canonical skill remains the dictionary key.
     """
 
     data = _load_gzip_json(
@@ -178,101 +338,159 @@ def load_synonyms() -> Dict[str, List[str]]:
         {}
     )
 
-    if not isinstance(data, dict):
+    if not isinstance(
+        data,
+        dict
+    ):
         return {}
 
     normalized = {}
 
     for key, values in data.items():
 
-        key = str(key).strip().lower()
+        canonical = str(
+            key
+        ).strip().lower()
 
-        if not key:
+        if not canonical:
             continue
 
-        if isinstance(values, list):
+        if not isinstance(
+            values,
+            list
+        ):
+            continue
 
-            normalized[key] = [
-                str(value).strip().lower()
-                for value in values
-                if str(value).strip()
-            ]
+        alternatives = []
+
+        for value in values:
+
+            if value is None:
+                continue
+
+            value = str(
+                value
+            ).strip().lower()
+
+            if value:
+                alternatives.append(
+                    value
+                )
+
+        normalized[
+            canonical
+        ] = alternatives
 
     return normalized
 
 
-# ==============================================================
-# Build lookup structures
-# ==============================================================
+# ============================================================
+# Skill Lookup
+# ============================================================
 
 @lru_cache(maxsize=1)
 def build_skill_lookup() -> Dict[str, str]:
     """
-    Create a normalized lookup table.
+    Build a normalized lookup table.
 
-    Example:
+    Example
+    -------
 
-        "machine learning" -> "machine learning"
-        "ml"               -> "machine learning"
+        "python" -> "python"
 
-    The canonical skill name is returned.
+        "ml" ->
+            "machine learning"
+
+        "machine-learning" ->
+            "machine learning"
+
+    Returns
+    -------
+    Dict[str, str]
+        Alternative skill → canonical skill.
     """
-
-    skills = load_skills()
 
     lookup = {}
 
-    for skill in skills:
-        lookup[skill] = skill
+    # --------------------------------------------------------
+    # Canonical skills
+    # --------------------------------------------------------
+
+    for skill in load_skills():
+
+        lookup[
+            skill
+        ] = skill
+
+    # --------------------------------------------------------
+    # Synonyms
+    # --------------------------------------------------------
 
     synonyms = load_synonyms()
 
     for canonical, alternatives in synonyms.items():
 
-        # Canonical skill itself.
-        lookup[canonical] = canonical
+        # Make sure canonical skill exists.
+        lookup[
+            canonical
+        ] = canonical
 
         for alternative in alternatives:
 
-            alternative = alternative.strip().lower()
+            alternative = (
+                alternative
+                .strip()
+                .lower()
+            )
 
             if alternative:
-                lookup[alternative] = canonical
+
+                lookup[
+                    alternative
+                ] = canonical
 
     return lookup
 
 
-# ==============================================================
-# Phrase matching
-# ==============================================================
+# ============================================================
+# Skill Pattern Cache
+# ============================================================
 
-def _contains_skill(
-    text: str,
+@lru_cache(maxsize=4096)
+def _build_skill_pattern(
     skill: str
-) -> bool:
+):
     """
-    Check whether a skill occurs as a complete phrase.
+    Build and cache a regular-expression pattern for a skill.
 
-    Word boundaries prevent false matches such as:
-
-        "R" matching "research"
-
-    while still allowing technical skills such as:
-
-        C++
-        C#
-        .NET
-        Node.js
+    Caching avoids recompiling the same expression during
+    repeated resume-analysis requests.
     """
 
     if not skill:
-        return False
+        return None
 
-    # Escape the skill so symbols such as + and . are literal.
-    escaped = re.escape(skill)
+    escaped = re.escape(
+        skill
+    )
 
-    # For normal alphabetic/number skills use boundaries.
-    if re.search(r"[a-z0-9]", skill):
+    # --------------------------------------------------------
+    # Skills containing normal alphanumeric characters
+    # receive boundary protection.
+    #
+    # This prevents:
+    #
+    # "r"
+    #
+    # from matching:
+    #
+    # "research"
+    # --------------------------------------------------------
+
+    if re.search(
+        r"[a-z0-9]",
+        skill
+    ):
 
         pattern = (
             r"(?<![a-z0-9])"
@@ -284,23 +502,59 @@ def _contains_skill(
 
         pattern = escaped
 
-    return re.search(
-        pattern,
-        text,
-        flags=re.IGNORECASE
-    ) is not None
+    try:
+
+        return re.compile(
+            pattern,
+            flags=re.IGNORECASE
+        )
+
+    except re.error:
+
+        return None
 
 
-# ==============================================================
-# Main extraction
-# ==============================================================
+# ============================================================
+# Phrase Matching
+# ============================================================
+
+def _contains_skill(
+    text: str,
+    skill: str
+) -> bool:
+    """
+    Check whether a skill appears as a complete phrase.
+
+    Regular-expression patterns are cached to reduce CPU
+    overhead on repeated requests.
+    """
+
+    if not text or not skill:
+        return False
+
+    pattern = _build_skill_pattern(
+        skill
+    )
+
+    if pattern is None:
+        return False
+
+    return (
+        pattern.search(text)
+        is not None
+    )
+
+
+# ============================================================
+# Main Skill Extraction
+# ============================================================
 
 def extract_skills(
     text: str,
-    max_skills: int = 100
+    max_skills: int = DEFAULT_MAX_SKILLS
 ) -> List[str]:
     """
-    Extract skills from resume text.
+    Extract canonical skills from resume text.
 
     Parameters
     ----------
@@ -308,31 +562,79 @@ def extract_skills(
         Resume text.
 
     max_skills:
-        Maximum number of returned skills.
+        Maximum number of skills returned.
 
     Returns
     -------
     List[str]
-        Canonical skill names.
+        Canonical skill names ranked by training frequency.
     """
 
     if not text:
         return []
 
-    normalized = normalize_text(text)
+    # --------------------------------------------------------
+    # Protect the server from unreasonable values.
+    # --------------------------------------------------------
+
+    try:
+
+        max_skills = int(
+            max_skills
+        )
+
+    except (
+        TypeError,
+        ValueError
+    ):
+
+        max_skills = DEFAULT_MAX_SKILLS
+
+    max_skills = max(
+        1,
+        min(
+            max_skills,
+            MAX_ALLOWED_SKILLS
+        )
+    )
+
+    # --------------------------------------------------------
+    # Normalize resume
+    # --------------------------------------------------------
+
+    normalized = normalize_text(
+        text
+    )
 
     if not normalized:
         return []
 
+    # --------------------------------------------------------
+    # Build lookup
+    # --------------------------------------------------------
+
     lookup = build_skill_lookup()
+
+    if not lookup:
+        return []
 
     found: Set[str] = set()
 
-    # Sort by length so multi-word skills are matched before
-    # shorter related terms.
+    # --------------------------------------------------------
+    # Check candidate skills.
+    #
+    # The lookup is already ordered by skill length through
+    # load_skills(), but synonym additions may not be.
+    #
+    # Sorting here ensures multi-word skills are checked first.
+    # --------------------------------------------------------
+
     candidates = sorted(
         lookup.keys(),
-        key=lambda x: (-len(x), x)
+        key=lambda value: (
+            -len(value),
+            value
+        )
     )
 
     for candidate in candidates:
@@ -342,39 +644,66 @@ def extract_skills(
             candidate
         ):
 
-            canonical = lookup[candidate]
+            canonical = lookup[
+                candidate
+            ]
 
-            found.add(canonical)
+            found.add(
+                canonical
+            )
 
-            if len(found) >= max_skills:
-                break
+    # --------------------------------------------------------
+    # Nothing found
+    # --------------------------------------------------------
 
-    # Rank using training frequency where available.
+    if not found:
+        return []
+
+    # --------------------------------------------------------
+    # Rank using training frequency.
+    #
+    # Higher-frequency skills appear first.
+    # Alphabetical ordering provides deterministic results
+    # when frequencies are equal.
+    # --------------------------------------------------------
+
     frequency = load_skill_frequency()
 
     results = sorted(
         found,
         key=lambda skill: (
-            -frequency.get(skill, 0),
+            -frequency.get(
+                skill,
+                0
+            ),
             skill
         )
     )
 
-    return results[:max_skills]
+    return results[
+        :max_skills
+    ]
 
 
-# ==============================================================
-# Detailed extraction
-# ==============================================================
+# ============================================================
+# Detailed Skill Extraction
+# ============================================================
 
 def extract_skill_details(
     text: str,
-    max_skills: int = 100
+    max_skills: int = DEFAULT_MAX_SKILLS
 ) -> List[Dict]:
     """
-    Return skills together with their training frequency.
+    Return extracted skills together with training frequency.
 
-    Useful for the employer-facing API.
+    Example output:
+
+        [
+            {
+                "skill": "python",
+                "frequency": 1250
+            }
+        ]
     """
 
     skills = extract_skills(
@@ -384,49 +713,75 @@ def extract_skill_details(
 
     frequency = load_skill_frequency()
 
-    results = []
-
-    for skill in skills:
-
-        results.append({
+    return [
+        {
             "skill": skill,
             "frequency": frequency.get(
                 skill,
                 0
             )
-        })
+        }
+        for skill in skills
+    ]
 
-    return results
 
-
-# ==============================================================
-# Required skills comparison
-# ==============================================================
+# ============================================================
+# Required Skill Comparison
+# ============================================================
 
 def compare_skills(
     resume_text: str,
     required_skills: List[str]
 ) -> Dict:
     """
-    Compare resume skills against employer requirements.
+    Compare resume skills against employer-required skills.
 
-    Returns:
-        matched
-        missing
-        match_percentage
+    Returns
+    -------
+
+        {
+            "matched": [...],
+            "missing": [...],
+            "required": [...],
+            "match_percentage": 75.0
+        }
+
+    Synonyms are normalized to their canonical skill names.
     """
 
+    if not isinstance(
+        required_skills,
+        list
+    ):
+
+        required_skills = []
+
+    # --------------------------------------------------------
+    # Extract resume skills
+    # --------------------------------------------------------
+
     resume_skills = set(
-        extract_skills(resume_text)
+        extract_skills(
+            resume_text
+        )
     )
 
-    normalized_required = []
+    # --------------------------------------------------------
+    # Lookup canonical names
+    # --------------------------------------------------------
 
     lookup = build_skill_lookup()
 
+    normalized_required = set()
+
     for skill in required_skills:
 
-        normalized = normalize_text(skill)
+        if skill is None:
+            continue
+
+        normalized = normalize_text(
+            str(skill)
+        )
 
         if not normalized:
             continue
@@ -436,42 +791,54 @@ def compare_skills(
             normalized
         )
 
-        normalized_required.append(
+        normalized_required.add(
             canonical
         )
 
-    required_set = set(
-        normalized_required
-    )
+    # --------------------------------------------------------
+    # Compare
+    # --------------------------------------------------------
 
     matched = sorted(
         resume_skills.intersection(
-            required_set
+            normalized_required
         )
     )
 
     missing = sorted(
-        required_set.difference(
+        normalized_required.difference(
             resume_skills
         )
     )
 
-    if required_set:
+    required = sorted(
+        normalized_required
+    )
+
+    # --------------------------------------------------------
+    # Match percentage
+    # --------------------------------------------------------
+
+    if normalized_required:
 
         percentage = (
             len(matched)
             /
-            len(required_set)
-        ) * 100
+            len(normalized_required)
+        ) * 100.0
 
     else:
 
         percentage = 0.0
 
     return {
+
         "matched": matched,
+
         "missing": missing,
-        "required": sorted(required_set),
+
+        "required": required,
+
         "match_percentage": round(
             percentage,
             2
@@ -479,41 +846,96 @@ def compare_skills(
     }
 
 
-# ==============================================================
-# Health check
-# ==============================================================
+# ============================================================
+# Skill Engine Health Check
+# ============================================================
 
 def skill_engine_status() -> Dict:
     """
-    Return information about the skill engine.
+    Return lightweight information about the skill engine.
 
-    Useful for debugging the deployed application.
+    This endpoint can be used for deployment diagnostics.
     """
 
     skills = load_skills()
+
     frequency = load_skill_frequency()
+
     synonyms = load_synonyms()
 
+    lookup = build_skill_lookup()
+
     return {
+
         "status": "ready",
-        "skill_count": len(skills),
-        "frequency_entries": len(frequency),
-        "synonym_entries": len(synonyms),
-        "skills_file_exists": SKILLS_FILE.exists(),
-        "frequency_file_exists": FREQUENCY_FILE.exists(),
-        "synonyms_file_exists": SYNONYMS_FILE.exists()
+
+        "skill_count": len(
+            skills
+        ),
+
+        "frequency_entries": len(
+            frequency
+        ),
+
+        "synonym_entries": len(
+            synonyms
+        ),
+
+        "lookup_entries": len(
+            lookup
+        ),
+
+        "skills_file_exists":
+            SKILLS_FILE.exists(),
+
+        "frequency_file_exists":
+            FREQUENCY_FILE.exists(),
+
+        "synonyms_file_exists":
+            SYNONYMS_FILE.exists()
     }
 
 
-# ==============================================================
-# Simple local test
-# ==============================================================
+# ============================================================
+# Cache Management
+# ============================================================
+
+def clear_skill_caches() -> None:
+    """
+    Clear cached skill artifacts and compiled patterns.
+
+    Normally this does not need to be called in production.
+
+    It is useful during development/testing if the underlying
+    skill artifacts are replaced without restarting Python.
+    """
+
+    load_skills.cache_clear()
+
+    load_skill_frequency.cache_clear()
+
+    load_synonyms.cache_clear()
+
+    build_skill_lookup.cache_clear()
+
+    _build_skill_pattern.cache_clear()
+
+
+# ============================================================
+# Local Test
+# ============================================================
 
 if __name__ == "__main__":
 
     print("=" * 60)
-    print("TalentMatch AI - Skill Extraction Engine")
+
+    print(
+        "TalentMatch AI - Skill Extraction Engine"
+    )
+
     print("=" * 60)
+
+    print()
 
     print(
         json.dumps(
@@ -522,19 +944,41 @@ if __name__ == "__main__":
         )
     )
 
+    print()
+
     sample_resume = """
-    AI Engineer with experience in Python, Machine Learning,
-    Deep Learning, TensorFlow, PyTorch, SQL, Docker,
-    FastAPI, Computer Vision and Natural Language Processing.
+    AI Engineer with experience in Python,
+    Machine Learning, Deep Learning,
+    TensorFlow, PyTorch, SQL, Docker,
+    FastAPI, Computer Vision and
+    Natural Language Processing.
     """
 
     skills = extract_skills(
         sample_resume
     )
 
-    print("\nExtracted skills:")
+    print(
+        "\nExtracted skills:"
+    )
 
     for skill in skills:
+
         print(
             f"  - {skill}"
         )
+
+    print()
+
+    print(
+        "Detailed skills:"
+    )
+
+    print(
+        json.dumps(
+            extract_skill_details(
+                sample_resume
+            ),
+            indent=2
+        )
+    )
