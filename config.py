@@ -1,146 +1,99 @@
 """
-=========================================================
 TalentMatch AI
-Configuration
-=========================================================
+Production configuration
 
-Central configuration used throughout the application.
-
-Every module imports from here instead of hardcoding paths.
+Optimized for Render Free / low-memory deployment.
 """
 
 from pathlib import Path
-import torch
+import os
 
-# ==========================================================
-# Project Directories
-# ==========================================================
+# =========================================================
+# Project directories
+# =========================================================
 
-ROOT_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent
 
-MODELS_DIR = ROOT_DIR / "models"
-UPLOAD_DIR = ROOT_DIR / "uploads"
-STATIC_DIR = ROOT_DIR / "static"
-TEMPLATE_DIR = ROOT_DIR / "templates"
+MODELS_DIR = BASE_DIR / "models"
 
-UPLOAD_DIR.mkdir(exist_ok=True)
-
-# ==========================================================
-# Model Files
-# ==========================================================
-
-JOB_EMBEDDINGS = MODELS_DIR / "job_embeddings.npz"
-JOB_METADATA = MODELS_DIR / "job_metadata.parquet"
-
-INTERVIEW_EMBEDDINGS = MODELS_DIR / "interview_vectors.npz"
-INTERVIEW_METADATA = MODELS_DIR / "interview_metadata.parquet"
-
-TFIDF_MODEL = MODELS_DIR / "tfidf_vectorizer.pkl"
-
-SKILLS = MODELS_DIR / "skills.json.gz"
-SKILL_FREQUENCY = MODELS_DIR / "skill_frequency.json.gz"
-SYNONYMS = MODELS_DIR / "synonyms.json.gz"
-SKILL_GRAPH = MODELS_DIR / "skill_graph.json"
-
-MODEL_CONFIG = MODELS_DIR / "model_config.json"
-METADATA = MODELS_DIR / "metadata.json"
-EVALUATION = MODELS_DIR / "evaluation.json"
-HASHES = MODELS_DIR / "artifact_hashes.json"
-
-# ==========================================================
-# HuggingFace Sentence Transformer
-# ==========================================================
-
-# The model will automatically download on first startup.
-# It is cached locally afterwards.
+# =========================================================
+# Model
+# =========================================================
 
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
-EMBEDDING_DIM = 384
+DEVICE = "cpu"
 
-NORMALIZE_EMBEDDINGS = True
+# =========================================================
+# Artifact paths
+# =========================================================
 
-# ==========================================================
-# Resume Processing
-# ==========================================================
+JOB_EMBEDDINGS = (
+    MODELS_DIR / "job_embeddings.npz"
+)
+
+JOB_METADATA = (
+    MODELS_DIR / "job_metadata.parquet"
+)
+
+INTERVIEW_EMBEDDINGS = (
+    MODELS_DIR / "interview_vectors.npz"
+)
+
+INTERVIEW_METADATA = (
+    MODELS_DIR / "interview_metadata.parquet"
+)
+
+TFIDF_MODEL = (
+    MODELS_DIR / "tfidf_vectorizer.pkl"
+)
+
+SKILLS = (
+    MODELS_DIR / "skills.json.gz"
+)
+
+# =========================================================
+# Matching
+# =========================================================
+
+SEMANTIC_WEIGHT = 0.70
+
+TFIDF_WEIGHT = 0.30
+
+TOP_K_JOBS = 5
+
+TOP_K_INTERVIEWS = 5
+
+# =========================================================
+# Upload protection
+# =========================================================
+
+MAX_UPLOAD_SIZE = 10 * 1024 * 1024
 
 SUPPORTED_EXTENSIONS = {
     ".pdf",
     ".docx",
-    ".txt",
+    ".txt"
 }
 
-MAX_UPLOAD_SIZE = 10 * 1024 * 1024      # 10 MB
+# =========================================================
+# Resource limits
+# =========================================================
 
-# ==========================================================
-# Ranking Configuration
-# ==========================================================
+MAX_RESUME_TEXT_LENGTH = 200_000
 
-TOP_K_JOBS = 10
-
-TOP_K_INTERVIEWS = 10
-
-SEMANTIC_WEIGHT = 0.80
-
-TFIDF_WEIGHT = 0.20
-
-# ==========================================================
-# FastAPI
-# ==========================================================
-
-HOST = "0.0.0.0"
-
-PORT = 10000
-
-# ==========================================================
-# Torch
-# ==========================================================
-
-DEVICE = (
-    "cuda"
-    if torch.cuda.is_available()
-    else "cpu"
+# Prevent excessive tokenizer/thread memory.
+os.environ.setdefault(
+    "TOKENIZERS_PARALLELISM",
+    "false"
 )
 
-# ==========================================================
-# Application
-# ==========================================================
+os.environ.setdefault(
+    "OMP_NUM_THREADS",
+    "1"
+)
 
-APP_NAME = "TalentMatch AI"
-
-APP_VERSION = "1.0.0"
-
-# ==========================================================
-# Utility
-# ==========================================================
-
-def verify_required_files():
-    """
-    Verify every required model artifact exists.
-    """
-
-    required = [
-        JOB_EMBEDDINGS,
-        JOB_METADATA,
-        INTERVIEW_EMBEDDINGS,
-        INTERVIEW_METADATA,
-        TFIDF_MODEL,
-        SKILLS,
-        SKILL_FREQUENCY,
-        SYNONYMS,
-        SKILL_GRAPH,
-        MODEL_CONFIG,
-        METADATA,
-        EVALUATION,
-        HASHES,
-    ]
-
-    missing = [f.name for f in required if not f.exists()]
-
-    if missing:
-        raise FileNotFoundError(
-            "Missing model files:\n"
-            + "\n".join(missing)
-        )
-
-    return True
+os.environ.setdefault(
+    "MKL_NUM_THREADS",
+    "1"
+)
