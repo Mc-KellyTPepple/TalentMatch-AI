@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <meta
+        name="description"
+        content="TalentMatch AI - Intelligent resume and job matching powered by AI."
+    >
+
+    <title>TalentMatch AI | Intelligent Hiring</title>
+
+    <link
+        rel="stylesheet"
+        href="/static/style.css"
+    >
+
+</head>
+
+<body>
+
+<!-- =========================================================
+     NAVIGATION
+========================================================= -->
+
+<header class="navbar">
+
+    <div class="brand">
+
+        <div class="brand-icon">
+            TM
+        </div>
+
+        <div>
+
+            <div class="brand-name">
+                TalentMatch AI
+            </div>
+
+            <div class="brand-tagline">
+                Intelligent Talent Matching
+            </div>
+
+        </div>
+
+    </div>
+
+    <div class="nav-status">
+
+        <span class="status-dot"></span>
+
+        AI Matching Engine Online
+
+    </div>
+
+</header>
+
+
+<!-- =========================================================
+     HERO SECTION
+========================================================= -->
+
+<section class="hero">
+
+    <div class="hero-content">
+
+        <div class="eyebrow">
+            AI-POWERED RECRUITMENT
+        </div>
+
+        <h1>
+            Find the right opportunities
+            <span>faster.</span>
+        </h1>
+
+        <p class="hero-description">
+
+            Upload a resume and let TalentMatch AI analyze
+            skills, experience and job requirements to identify
+            the strongest career matches.
+
+        </p>
+
+        <div class="hero-features">
+
+            <div class="feature">
+                <span>✓</span>
+                Semantic AI Matching
+            </div>
+
+            <div class="feature">
+                <span>✓</span>
+                Keyword Analysis
+            </div>
+
+            <div class="feature">
+                <span>✓</span>
+                Interview Preparation
+            </div>
+
+        </div>
+
+    </div>
+
+</section>
+
+
+<!-- =========================================================
+     MAIN APPLICATION
+========================================================= -->
+
+<main class="container">
+
+    <!-- =====================================================
+         UPLOAD CARD
+    ====================================================== -->
+
+    <section class="upload-card">
+
+        <div class="section-header">
+
+            <div>
+
+                <h2>
+                    Analyze a Resume
+                </h2>
+
+                <p>
+                    Upload a candidate resume to discover
+                    the most relevant opportunities.
+                </p>
+
+            </div>
+
+            <div class="ai-badge">
+                AI
+            </div>
+
+        </div>
+
+
+        <!-- Upload Area -->
+
+        <form
+            id="resumeForm"
+            enctype="multipart/form-data"
+        >
+
+            <label
+                for="resume"
+                class="upload-area"
+                id="uploadArea"
+            >
+
+                <div class="upload-icon">
+                    ↑
+                </div>
+
+                <h3>
+                    Drop your resume here
+                </h3>
+
+                <p>
+                    or click to browse your computer
+                </p>
+
+                <div class="supported-formats">
+
+                    PDF · DOCX · TXT
+
+                    <span>
+                        Maximum 10 MB
+                    </span>
+
+                </div>
+
+                <input
+                    type="file"
+                    id="resume"
+                    name="resume"
+                    accept=".pdf,.docx,.txt"
+                    hidden
+                    required
+                >
+
+            </label>
+
+
+            <!-- Selected File -->
+
+            <div
+                id="selectedFile"
+                class="selected-file hidden"
+            >
+
+                <div class="file-icon">
+                    📄
+                </div>
+
+                <div class="file-information">
+
+                    <strong id="fileName">
+                        Resume
+                    </strong>
+
+                    <span id="fileSize">
+                        0 KB
+                    </span>
+
+                </div>
+
+                <button
+                    type="button"
+                    id="removeFile"
+                    class="remove-file"
+                >
+                    ×
+                </button>
+
+            </div>
+
+
+            <!-- Analyze Button -->
+
+            <button
+                type="submit"
+                id="analyzeButton"
+                class="analyze-button"
+            >
+
+                <span id="buttonText">
+                    Analyze Resume
+                </span>
+
+                <span
+                    id="buttonLoader"
+                    class="button-loader hidden"
+                ></span>
+
+            </button>
+
+        </form>
+
+
+        <!-- Error -->
+
+        <div
+            id="errorMessage"
+            class="error-message hidden"
+        ></div>
+
+    </section>
+
+
+    <!-- =====================================================
+         LOADING STATE
+    ====================================================== -->
+
+    <section
+        id="loadingSection"
+        class="loading-section hidden"
+    >
+
+        <div class="loading-spinner"></div>
+
+        <h3>
+            TalentMatch AI is analyzing the resume
+        </h3>
+
+        <p>
+            Comparing skills, experience and qualifications
+            against available opportunities...
+        </p>
+
+        <div class="loading-steps">
+
+            <div class="loading-step active">
+                <span>1</span>
+                Reading resume
+            </div>
+
+            <div class="loading-step">
+                <span>2</span>
+                Generating AI representation
+            </div>
+
+            <div class="loading-step">
+                <span>3</span>
+                Matching jobs
+            </div>
+
+        </div>
+
+    </section>
+
+
+    <!-- =====================================================
+         RESULTS SECTION
+    ====================================================== -->
+
+    <section
+        id="resultsSection"
+        class="results-section hidden"
+    >
+
+        <!-- =================================================
+             SUMMARY
+        ================================================== -->
+
+        <div class="results-header">
+
+            <div>
+
+                <div class="eyebrow">
+                    AI ANALYSIS COMPLETE
+                </div>
+
+                <h2>
+                    Candidate Match Report
+                </h2>
+
+                <p>
+                    AI-generated compatibility analysis based
+                    on the uploaded resume.
+                </p>
+
+            </div>
+
+            <button
+                type="button"
+                id="newAnalysis"
+                class="secondary-button"
+            >
+                Analyze Another Resume
+            </button>
+
+        </div>
+
+
+        <!-- =================================================
+             SUMMARY CARDS
+        ================================================== -->
+
+        <div class="summary-grid">
+
+            <div class="summary-card">
+
+                <div class="summary-label">
+                    JOBS ANALYZED
+                </div>
+
+                <div
+                    id="jobsAnalyzed"
+                    class="summary-value"
+                >
+                    0
+                </div>
+
+            </div>
+
+
+            <div class="summary-card highlight">
+
+                <div class="summary-label">
+                    BEST MATCH
+                </div>
+
+                <div
+                    id="bestMatchScore"
+                    class="summary-value"
+                >
+                    0%
+                </div>
+
+                <div
+                    id="bestMatchLevel"
+                    class="summary-description"
+                >
+                    No Match
+                </div>
+
+            </div>
+
+
+            <div class="summary-card">
+
+                <div class="summary-label">
+                    AVERAGE MATCH
+                </div>
+
+                <div
+                    id="averageMatchScore"
+                    class="summary-value"
+                >
+                    0%
+                </div>
+
+            </div>
+
+        </div>
+
+
+        <!-- =================================================
+             JOB MATCHES
+        ================================================== -->
+
+        <div class="results-heading">
+
+            <div>
+
+                <h3>
+                    Top Job Matches
+                </h3>
+
+                <p>
+                    Ranked using semantic and keyword-based
+                    analysis.
+                </p>
+
+            </div>
+
+        </div>
+
+
+        <div
+            id="jobsContainer"
+            class="jobs-container"
+        ></div>
+
+
+        <!-- =================================================
+             INTERVIEW SECTION
+        ================================================== -->
+
+        <div
+            id="interviewSection"
+            class="interview-section hidden"
+        >
+
+            <div class="results-heading">
+
+                <div>
+
+                    <h3>
+                        Recommended Interview Preparation
+                    </h3>
+
+                    <p>
+                        Questions selected based on the
+                        candidate's profile.
+                    </p>
+
+                </div>
+
+            </div>
+
+            <div
+                id="interviewContainer"
+                class="interview-container"
+            ></div>
+
+        </div>
+
+    </section>
+
+
+    <!-- =====================================================
+         PRODUCT VALUE SECTION
+    ====================================================== -->
+
+    <section class="value-section">
+
+        <div class="value-header">
+
+            <div class="eyebrow">
+                WHY TALENTMATCH AI
+            </div>
+
+            <h2>
+                More than keyword matching.
+            </h2>
+
+            <p>
+                TalentMatch AI combines multiple signals to
+                provide a more useful view of candidate-job
+                compatibility.
+            </p>
+
+        </div>
+
+
+        <div class="value-grid">
+
+            <div class="value-card">
+
+                <div class="value-icon">
+                    AI
+                </div>
+
+                <h3>
+                    Semantic Understanding
+                </h3>
+
+                <p>
+                    Understands related skills and experience
+                    rather than relying only on exact keywords.
+                </p>
+
+            </div>
+
+
+            <div class="value-card">
+
+                <div class="value-icon">
+                    %
+                </div>
+
+                <h3>
+                    Transparent Scores
+                </h3>
+
+                <p>
+                    Each recommendation includes interpretable
+                    matching scores and supporting signals.
+                </p>
+
+            </div>
+
+
+            <div class="value-card">
+
+                <div class="value-icon">
+                    ↗
+                </div>
+
+                <h3>
+                    Career Intelligence
+                </h3>
+
+                <p>
+                    Helps candidates identify relevant
+                    opportunities and prepare for interviews.
+                </p>
+
+            </div>
+
+        </div>
+
+    </section>
+
+</main>
+
+
+<!-- =========================================================
+     FOOTER
+========================================================= -->
+
+<footer class="footer">
+
+    <div>
+
+        <strong>
+            TalentMatch AI
+        </strong>
+
+        <span>
+            Intelligent recruitment technology.
+        </span>
+
+    </div>
+
+    <div class="footer-note">
+        AI recommendations are compatibility estimates
+        and do not guarantee employment.
+    </div>
+
+</footer>
+
+
+<!-- =========================================================
+     JAVASCRIPT
+========================================================= -->
+
+<script src="/static/app.js"></script>
+
+</body>
+
+</html>
