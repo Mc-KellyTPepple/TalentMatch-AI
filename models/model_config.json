@@ -1,0 +1,1 @@
+{"embedding_model":"all-MiniLM-L6-v2","embedding_dimension":384,"normalize_embeddings":true,"tfidf_max_features":4000,"tfidf_ngram":[1,2],"pipeline_version":"1.0.20260807"}
