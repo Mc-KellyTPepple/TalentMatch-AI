@@ -1,32 +1,38 @@
 """
 TalentMatch AI
-Production configuration
+Production Configuration
 
-Optimized for Render Free / low-memory deployment.
+Optimized for Render Free / 512 MB RAM.
 """
 
 from pathlib import Path
 import os
 
-# =========================================================
-# Project directories
-# =========================================================
+
+# ============================================================
+# Project Paths
+# ============================================================
 
 BASE_DIR = Path(__file__).resolve().parent
 
 MODELS_DIR = BASE_DIR / "models"
 
-# =========================================================
-# Model
-# =========================================================
 
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+# ============================================================
+# Embedding Model
+# ============================================================
+
+EMBEDDING_MODEL = os.getenv(
+    "EMBEDDING_MODEL",
+    "sentence-transformers/all-MiniLM-L6-v2"
+)
 
 DEVICE = "cpu"
 
-# =========================================================
-# Artifact paths
-# =========================================================
+
+# ============================================================
+# Trained Artifacts
+# ============================================================
 
 JOB_EMBEDDINGS = (
     MODELS_DIR / "job_embeddings.npz"
@@ -52,23 +58,41 @@ SKILLS = (
     MODELS_DIR / "skills.json.gz"
 )
 
-# =========================================================
-# Matching
-# =========================================================
 
-SEMANTIC_WEIGHT = 0.70
+# ============================================================
+# Ranking
+# ============================================================
 
-TFIDF_WEIGHT = 0.30
+SEMANTIC_WEIGHT = float(
+    os.getenv(
+        "SEMANTIC_WEIGHT",
+        "0.70"
+    )
+)
 
-TOP_K_JOBS = 5
+TFIDF_WEIGHT = float(
+    os.getenv(
+        "TFIDF_WEIGHT",
+        "0.30"
+    )
+)
+
+
+# ============================================================
+# Result Limits
+# ============================================================
+
+TOP_K_JOBS = 10
 
 TOP_K_INTERVIEWS = 5
 
-# =========================================================
-# Upload protection
-# =========================================================
+
+# ============================================================
+# Upload Protection
+# ============================================================
 
 MAX_UPLOAD_SIZE = 10 * 1024 * 1024
+
 
 SUPPORTED_EXTENSIONS = {
     ".pdf",
@@ -76,24 +100,39 @@ SUPPORTED_EXTENSIONS = {
     ".txt"
 }
 
-# =========================================================
-# Resource limits
-# =========================================================
+
+# ============================================================
+# Resume Processing Limits
+# ============================================================
 
 MAX_RESUME_TEXT_LENGTH = 200_000
 
-# Prevent excessive tokenizer/thread memory.
-os.environ.setdefault(
-    "TOKENIZERS_PARALLELISM",
-    "false"
-)
 
-os.environ.setdefault(
-    "OMP_NUM_THREADS",
-    "1"
-)
+# ============================================================
+# Memory Protection
+# ============================================================
 
-os.environ.setdefault(
-    "MKL_NUM_THREADS",
-    "1"
+# Maximum number of jobs examined by the API.
+#
+# The trained embedding file can contain many jobs.
+# Keeping the full array is still necessary for fast
+# similarity search, but these limits prevent excessively
+# large responses.
+
+MAX_RETURNED_JOBS = 10
+
+MAX_RETURNED_INTERVIEWS = 5
+
+
+# ============================================================
+# Server
+# ============================================================
+
+HOST = "0.0.0.0"
+
+PORT = int(
+    os.getenv(
+        "PORT",
+        "10000"
+    )
 )
