@@ -1,26 +1,30 @@
 """
-============================================================
 TalentMatch AI
 Production FastAPI Application
-============================================================
 
-Features:
+Designed for:
+Render Free
+512 MB RAM
+CPU inference
 
-• Resume upload
-• PDF/DOCX/TXT extraction
-• AI job matching
-• Match score
-• Match explanation
-• Interview preparation
-• Employer-friendly dashboard
+Architecture:
 
-Designed for Render Free / 512 MB RAM.
-
-Uploaded resumes are processed in memory and are not
-permanently stored.
-============================================================
+Browser
+   ↓
+FastAPI
+   ↓
+Resume Parser
+   ↓
+Prediction Engine
+   ↓
+Ranking Engine
+   ↓
+Interview Retrieval
+   ↓
+JSON / HTML Response
 """
 
+import os
 import gc
 
 from fastapi import (
@@ -28,36 +32,28 @@ from fastapi import (
     File,
     UploadFile,
     HTTPException,
-    Request
+    Request,
 )
 
 from fastapi.responses import (
     HTMLResponse,
-    JSONResponse
+    JSONResponse,
 )
 
 from fastapi.templating import Jinja2Templates
 
+from fastapi.staticfiles import StaticFiles
+
 from resume_parser import (
     parse_resume,
-    ResumeParsingError
-)
-
-from skill_extractor import (
-    extract_skills
+    ResumeParsingError,
 )
 
 from predict import engine
 
 from ranking_engine import (
     analyze_jobs,
-    format_interview_questions
-)
-
-from config import (
-    MAX_UPLOAD_SIZE,
-    TOP_K_JOBS,
-    TOP_K_INTERVIEWS
+    format_interview_questions,
 )
 
 
@@ -70,7 +66,18 @@ app = FastAPI(
     description=(
         "AI-powered resume and job matching platform."
     ),
-    version="1.0.0"
+    version="1.0.0",
+)
+
+
+# ============================================================
+# Static Files
+# ============================================================
+
+app.mount(
+    "/static",
+    StaticFiles(directory="static"),
+    name="static",
 )
 
 
@@ -88,17 +95,14 @@ templates = Jinja2Templates(
 # ============================================================
 
 @app.get(
-    "/health"
+    "/health",
+    response_class=JSONResponse
 )
-def health():
+def health_check():
 
     return {
-
-        "status":
-            "healthy",
-
-        "service":
-            "TalentMatch AI"
+        "status": "healthy",
+        "service": "TalentMatch AI",
     }
 
 
@@ -127,7 +131,7 @@ async def home(
 # ============================================================
 
 @app.post(
-    "/api/analyze"
+    "/analyze"
 )
 async def analyze_resume(
     file: UploadFile = File(...)
@@ -147,185 +151,160 @@ async def analyze_resume(
     # --------------------------------------------------------
     # Read uploaded file
     #
-    # We deliberately read only MAX_UPLOAD_SIZE + 1 bytes.
-    # This prevents oversized uploads from consuming RAM.
+    # Upload is processed in memory.
+    # It is NOT permanently stored.
     # --------------------------------------------------------
 
-    data = await file.read(
-        MAX_UPLOAD_SIZE + 1
-    )
-
-    if len(data) > MAX_UPLOAD_SIZE:
-
-        del data
-
-        raise HTTPException(
-            status_code=413,
-            detail=(
-                "Resume exceeds the maximum "
-                "allowed size of 10 MB."
-            )
-        )
-
-    if not data:
-
-        raise HTTPException(
-            status_code=400,
-            detail="Uploaded resume is empty."
-        )
-
-    # --------------------------------------------------------
-    # Parse resume
-    # --------------------------------------------------------
+    file_bytes = await file.read()
 
     try:
 
+        # ----------------------------------------------------
+        # Parse resume
+        # ----------------------------------------------------
+
         resume_text = parse_resume(
-            file_bytes=data,
-            filename=file.filename
+            file_bytes=file_bytes,
+            filename=file.filename,
         )
+
+        # ----------------------------------------------------
+        # Release uploaded bytes as early as possible.
+        # ----------------------------------------------------
+
+        del file_bytes
+
+        # ----------------------------------------------------
+        # Analyze jobs
+        # ----------------------------------------------------
+
+        analysis = analyze_jobs(
+            prediction_engine=engine,
+            resume_text=resume_text,
+        )
+
+        # ----------------------------------------------------
+        # Retrieve relevant interview questions
+        # ----------------------------------------------------
+
+        questions = engine.interview_questions(
+            resume_text=resume_text
+        )
+
+        interview_results = (
+            format_interview_questions(
+                questions,
+                top_k=5
+            )
+        )
+
+        # ----------------------------------------------------
+        # Candidate response
+        # ----------------------------------------------------
+
+        response = {
+
+            "success": True,
+
+            "summary": analysis[
+                "summary"
+            ],
+
+            "jobs": analysis[
+                "jobs"
+            ],
+
+            "interview_questions":
+                interview_results,
+
+        }
+
+        # ----------------------------------------------------
+        # Release large temporary objects
+        # ----------------------------------------------------
+
+        del resume_text
+        del analysis
+        del questions
+        del interview_results
+
+        gc.collect()
+
+        return response
 
     except ResumeParsingError as exc:
 
-        del data
-        gc.collect()
+        return JSONResponse(
 
-        raise HTTPException(
             status_code=400,
-            detail=str(exc)
-        )
 
-    # --------------------------------------------------------
-    # Release uploaded binary immediately.
-    # --------------------------------------------------------
-
-    del data
-
-    # --------------------------------------------------------
-    # Job matching
-    # --------------------------------------------------------
-
-    try:
-
-        job_analysis = analyze_jobs(
-            prediction_engine=engine,
-            resume_text=resume_text,
-            top_k=TOP_K_JOBS
-        )
-
-        # ----------------------------------------------------
-        # Skill extraction
-        # ----------------------------------------------------
-
-        skills = extract_skills(
-            resume_text,
-            engine.skills
-        )
-
-        # ----------------------------------------------------
-        # Interview preparation
-        # ----------------------------------------------------
-
-        interview_predictions = (
-            engine.interview_questions(
-                resume_text,
-                top_k=TOP_K_INTERVIEWS
-            )
-        )
-
-        interview_questions = (
-            format_interview_questions(
-                interview_predictions,
-                top_k=TOP_K_INTERVIEWS
-            )
+            content={
+                "success": False,
+                "error": str(exc),
+            }
         )
 
     except Exception as exc:
-
-        gc.collect()
 
         print(
             "Analysis error:",
             repr(exc)
         )
 
-        raise HTTPException(
+        gc.collect()
+
+        return JSONResponse(
+
             status_code=500,
-            detail=(
-                "Unable to complete AI analysis."
-            )
+
+            content={
+                "success": False,
+                "error": (
+                    "Unable to analyze the resume. "
+                    "Please try again."
+                ),
+            }
         )
 
-    # --------------------------------------------------------
-    # Return lightweight JSON
-    # --------------------------------------------------------
 
-    response = {
+# ============================================================
+# API Information
+# ============================================================
 
-        "success":
-            True,
+@app.get(
+    "/api"
+)
+def api_info():
 
-        "resume": {
+    return {
 
-            "filename":
-                file.filename,
+        "name": "TalentMatch AI",
 
-            "characters":
-                len(resume_text),
+        "version": "1.0.0",
 
-            "words":
-                len(resume_text.split())
-        },
+        "features": [
 
-        "skills":
-            skills,
+            "Resume parsing",
 
-        "matching":
-            job_analysis,
+            "Semantic job matching",
 
-        "interview":
-            interview_questions
+            "TF-IDF keyword matching",
+
+            "Hybrid job ranking",
+
+            "Interview question retrieval",
+
+        ],
+
+        "status": "online",
     }
 
-    # --------------------------------------------------------
-    # Release temporary text after response has been built.
-    # --------------------------------------------------------
 
-    del resume_text
+# ============================================================
+# Application Shutdown
+# ============================================================
+
+@app.on_event("shutdown")
+def shutdown_event():
 
     gc.collect()
-
-    return JSONResponse(
-        content=response
-    )
-
-
-# ============================================================
-# Error Handler
-# ============================================================
-
-@app.exception_handler(
-    Exception
-)
-async def global_exception_handler(
-    request: Request,
-    exc: Exception
-):
-
-    print(
-        "Unhandled application error:",
-        repr(exc)
-    )
-
-    return JSONResponse(
-
-        status_code=500,
-
-        content={
-            "success":
-                False,
-
-            "error":
-                "An internal server error occurred."
-        }
-    )
