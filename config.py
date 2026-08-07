@@ -1,139 +1,146 @@
 """
+=========================================================
 TalentMatch AI
 Configuration
+=========================================================
+
+Central configuration used throughout the application.
+
+Every module imports from here instead of hardcoding paths.
 """
 
 from pathlib import Path
-import os
+import torch
 
-# -------------------------------------------------------
-# PROJECT PATHS
-# -------------------------------------------------------
+# ==========================================================
+# Project Directories
+# ==========================================================
 
-BASE_DIR = Path(__file__).resolve().parent
+ROOT_DIR = Path(__file__).resolve().parent
 
-DATASETS_DIR = BASE_DIR / "datasets"
-RAW_DATA_DIR = DATASETS_DIR / "raw"
-PROCESSED_DATA_DIR = DATASETS_DIR / "processed"
+MODELS_DIR = ROOT_DIR / "models"
+UPLOAD_DIR = ROOT_DIR / "uploads"
+STATIC_DIR = ROOT_DIR / "static"
+TEMPLATE_DIR = ROOT_DIR / "templates"
 
-MODELS_DIR = BASE_DIR / "models"
+UPLOAD_DIR.mkdir(exist_ok=True)
 
-UPLOAD_DIR = BASE_DIR / "uploads"
+# ==========================================================
+# Model Files
+# ==========================================================
 
-TEMPLATE_DIR = BASE_DIR / "templates"
+JOB_EMBEDDINGS = MODELS_DIR / "job_embeddings.npz"
+JOB_METADATA = MODELS_DIR / "job_metadata.parquet"
 
-STATIC_DIR = BASE_DIR / "static"
+INTERVIEW_EMBEDDINGS = MODELS_DIR / "interview_vectors.npz"
+INTERVIEW_METADATA = MODELS_DIR / "interview_metadata.parquet"
 
-# -------------------------------------------------------
-# DATASETS
-# -------------------------------------------------------
+TFIDF_MODEL = MODELS_DIR / "tfidf_vectorizer.pkl"
 
-RESUME_DATASET = DATASETS_DIR / "resumes.csv"
+SKILLS = MODELS_DIR / "skills.json.gz"
+SKILL_FREQUENCY = MODELS_DIR / "skill_frequency.json.gz"
+SYNONYMS = MODELS_DIR / "synonyms.json.gz"
+SKILL_GRAPH = MODELS_DIR / "skill_graph.json"
 
-JOB_DATASET = DATASETS_DIR / "job_descriptions.csv"
+MODEL_CONFIG = MODELS_DIR / "model_config.json"
+METADATA = MODELS_DIR / "metadata.json"
+EVALUATION = MODELS_DIR / "evaluation.json"
+HASHES = MODELS_DIR / "artifact_hashes.json"
 
-INTERVIEW_DATASET = DATASETS_DIR / "interview_questions.csv"
+# ==========================================================
+# HuggingFace Sentence Transformer
+# ==========================================================
 
-# -------------------------------------------------------
-# MODEL FILES
-# -------------------------------------------------------
+# The model will automatically download on first startup.
+# It is cached locally afterwards.
 
-ONNX_MODEL = MODELS_DIR / "sentence_model.onnx"
-
-LABEL_ENCODER = MODELS_DIR / "label_encoder.pkl"
-
-MODEL_METADATA = MODELS_DIR / "metadata.json"
-
-# -------------------------------------------------------
-# EMBEDDING MODEL
-# -------------------------------------------------------
-
-MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-
-MAX_SEQUENCE_LENGTH = 256
+EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 EMBEDDING_DIM = 384
 
-# -------------------------------------------------------
-# ATS SCORING
-# -------------------------------------------------------
+NORMALIZE_EMBEDDINGS = True
 
-SEMANTIC_WEIGHT = 0.55
+# ==========================================================
+# Resume Processing
+# ==========================================================
 
-SKILL_WEIGHT = 0.25
-
-EXPERIENCE_WEIGHT = 0.10
-
-EDUCATION_WEIGHT = 0.05
-
-QUALITY_WEIGHT = 0.05
-
-# -------------------------------------------------------
-# FILES
-# -------------------------------------------------------
-
-ALLOWED_EXTENSIONS = {
-
+SUPPORTED_EXTENSIONS = {
     ".pdf",
-
-    ".docx"
-
+    ".docx",
+    ".txt",
 }
 
-MAX_UPLOAD_MB = 10
+MAX_UPLOAD_SIZE = 10 * 1024 * 1024      # 10 MB
 
-# -------------------------------------------------------
-# INFERENCE
-# -------------------------------------------------------
+# ==========================================================
+# Ranking Configuration
+# ==========================================================
 
-TOP_INTERVIEW_QUESTIONS = 5
+TOP_K_JOBS = 10
 
-TOP_MATCHES = 10
+TOP_K_INTERVIEWS = 10
 
-MINIMUM_MATCH_SCORE = 40
+SEMANTIC_WEIGHT = 0.80
 
-# -------------------------------------------------------
-# RENDER
-# -------------------------------------------------------
+TFIDF_WEIGHT = 0.20
+
+# ==========================================================
+# FastAPI
+# ==========================================================
 
 HOST = "0.0.0.0"
 
-PORT = int(os.getenv("PORT", 8000))
+PORT = 10000
 
-# -------------------------------------------------------
-# RANDOMNESS
-# -------------------------------------------------------
+# ==========================================================
+# Torch
+# ==========================================================
 
-SEED = 42
+DEVICE = (
+    "cuda"
+    if torch.cuda.is_available()
+    else "cpu"
+)
 
-# -------------------------------------------------------
-# LOGGING
-# -------------------------------------------------------
+# ==========================================================
+# Application
+# ==========================================================
 
-LOG_LEVEL = "INFO"
+APP_NAME = "TalentMatch AI"
 
-# -------------------------------------------------------
-# CREATE DIRECTORIES
-# -------------------------------------------------------
+APP_VERSION = "1.0.0"
 
-for directory in [
+# ==========================================================
+# Utility
+# ==========================================================
 
-    DATASETS_DIR,
+def verify_required_files():
+    """
+    Verify every required model artifact exists.
+    """
 
-    RAW_DATA_DIR,
+    required = [
+        JOB_EMBEDDINGS,
+        JOB_METADATA,
+        INTERVIEW_EMBEDDINGS,
+        INTERVIEW_METADATA,
+        TFIDF_MODEL,
+        SKILLS,
+        SKILL_FREQUENCY,
+        SYNONYMS,
+        SKILL_GRAPH,
+        MODEL_CONFIG,
+        METADATA,
+        EVALUATION,
+        HASHES,
+    ]
 
-    PROCESSED_DATA_DIR,
+    missing = [f.name for f in required if not f.exists()]
 
-    MODELS_DIR,
+    if missing:
+        raise FileNotFoundError(
+            "Missing model files:\n"
+            + "\n".join(missing)
+        )
 
-    UPLOAD_DIR
-
-]:
-
-    directory.mkdir(
-
-        parents=True,
-
-        exist_ok=True
-
-    )
+    return True
