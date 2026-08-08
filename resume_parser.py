@@ -1,251 +1,209 @@
 """
-=========================================================
+===============================================================
 TalentMatch AI
 Resume Parser
-=========================================================
 
-Production resume text extraction for:
-
-    PDF
-    DOCX
-    TXT
+Supports:
+• PDF
+• DOCX
+• TXT
 
 Designed for:
-    Render Free
-    512 MB RAM
-
-The parser processes uploaded resumes in memory and
-does not permanently store candidate documents.
-
-=========================================================
+• FastAPI
+• Render Free
+• 512 MB RAM
+• In-memory processing
+• No permanent resume storage
+===============================================================
 """
 
 from io import BytesIO
 from pathlib import Path
-from typing import Union
 
-from config import (
-    SUPPORTED_EXTENSIONS,
-    MAX_UPLOAD_SIZE,
-)
+from pypdf import PdfReader
+from docx import Document
 
 
-# =========================================================
-# Exceptions
-# =========================================================
+# =============================================================
+# Custom Exception
+# =============================================================
 
 class ResumeParsingError(Exception):
-    """Raised when a resume cannot be parsed."""
+    """
+    Raised when a resume cannot be parsed.
+    """
     pass
 
 
-# =========================================================
-# File Validation
-# =========================================================
+# =============================================================
+# Clean Text
+# =============================================================
 
-def validate_resume(
-    filename: str,
-    file_size: int
-) -> str:
-    """
-    Validate the uploaded resume.
-
-    Returns:
-        Normalized file extension.
-    """
-
-    if not filename:
-        raise ResumeParsingError(
-            "No resume filename was provided."
-        )
-
-    extension = Path(filename).suffix.lower()
-
-    if extension not in SUPPORTED_EXTENSIONS:
-        supported = ", ".join(
-            sorted(SUPPORTED_EXTENSIONS)
-        )
-
-        raise ResumeParsingError(
-            f"Unsupported resume format. "
-            f"Supported formats: {supported}"
-        )
-
-    if file_size <= 0:
-        raise ResumeParsingError(
-            "The uploaded resume is empty."
-        )
-
-    if file_size > MAX_UPLOAD_SIZE:
-        raise ResumeParsingError(
-            "Resume exceeds the maximum allowed "
-            "file size of 10 MB."
-        )
-
-    return extension
-
-
-# =========================================================
-# Text Cleaning
-# =========================================================
-
-def clean_text(text: str) -> str:
+def clean_text(text):
     """
     Normalize extracted resume text.
-
-    This reduces unnecessary whitespace while
-    preserving the actual resume content.
     """
 
-    if not text:
+    if text is None:
         return ""
 
+    text = str(text)
+
     # Normalize line endings
-    text = text.replace(
-        "\r\n",
-        "\n"
-    ).replace(
-        "\r",
-        "\n"
-    )
+    text = text.replace("\r\n", "\n")
+    text = text.replace("\r", "\n")
 
     # Remove null characters
-    text = text.replace(
-        "\x00",
-        ""
-    )
+    text = text.replace("\x00", "")
 
-    # Normalize spaces on each line
+    # Remove excessive spaces
     lines = []
 
     for line in text.split("\n"):
 
         line = " ".join(
-            line.split()
+            line.strip().split()
         )
 
         if line:
             lines.append(line)
 
-    # Rebuild document
-    text = "\n".join(lines)
-
-    # Prevent excessive blank lines
-    while "\n\n\n" in text:
-
-        text = text.replace(
-            "\n\n\n",
-            "\n\n"
-        )
-
-    return text.strip()
+    return "\n".join(lines)
 
 
-# =========================================================
+# =============================================================
 # PDF Parser
-# =========================================================
+# =============================================================
 
-def extract_pdf(
-    file_bytes: bytes
-) -> str:
+def parse_pdf(file_bytes):
     """
-    Extract text from a PDF stored in memory.
+    Extract text from a PDF resume.
 
-    PyMuPDF is used because it is lightweight and
-    generally faster than heavier PDF processing
-    alternatives.
+    Uses pypdf and processes the document
+    entirely in memory.
     """
 
     try:
 
-        import fitz
+        if not file_bytes:
+            raise ResumeParsingError(
+                "The PDF file is empty."
+            )
 
-    except ImportError as exc:
-
-        raise ResumeParsingError(
-            "PDF support requires PyMuPDF."
-        ) from exc
-
-    try:
-
-        document = fitz.open(
-            stream=file_bytes,
-            filetype="pdf"
+        pdf_stream = BytesIO(
+            file_bytes
         )
 
-        pages = []
+        reader = PdfReader(
+            pdf_stream
+        )
 
-        try:
+        if reader.is_encrypted:
 
-            for page in document:
+            try:
+                reader.decrypt("")
+            except Exception:
 
-                text = page.get_text()
+                raise ResumeParsingError(
+                    "The PDF is password protected. "
+                    "Please upload an unlocked PDF."
+                )
+
+        pages_text = []
+
+        for page in reader.pages:
+
+            try:
+
+                text = page.extract_text()
 
                 if text:
-                    pages.append(text)
+                    pages_text.append(
+                        text
+                    )
 
-        finally:
+            except Exception as exc:
 
-            document.close()
+                print(
+                    "PDF page extraction warning:",
+                    repr(exc)
+                )
 
-        return clean_text(
-            "\n".join(pages)
+        text = "\n".join(
+            pages_text
         )
+
+        text = clean_text(
+            text
+        )
+
+        if not text:
+
+            raise ResumeParsingError(
+                "No readable text was found in the PDF. "
+                "Please upload a text-based PDF rather than "
+                "a scanned image-only PDF."
+            )
+
+        return text
+
+    except ResumeParsingError:
+        raise
 
     except Exception as exc:
 
+        print(
+            "PDF parsing error:",
+            repr(exc)
+        )
+
         raise ResumeParsingError(
-            f"Unable to read PDF resume: {exc}"
+            "Unable to read the PDF resume. "
+            "Please make sure the PDF is valid and not corrupted."
         ) from exc
 
 
-# =========================================================
+# =============================================================
 # DOCX Parser
-# =========================================================
+# =============================================================
 
-def extract_docx(
-    file_bytes: bytes
-) -> str:
+def parse_docx(file_bytes):
     """
     Extract text from a DOCX resume.
-
-    Includes both paragraphs and table content,
-    because many professional resumes use tables
-    for skills, education, or experience.
     """
 
     try:
 
-        from docx import Document
-
-    except ImportError as exc:
-
-        raise ResumeParsingError(
-            "DOCX support requires python-docx."
-        ) from exc
-
-    try:
+        if not file_bytes:
+            raise ResumeParsingError(
+                "The DOCX file is empty."
+            )
 
         document = Document(
             BytesIO(file_bytes)
         )
 
-        parts = []
+        paragraphs = []
 
-        # -------------------------------------------------
+        # -----------------------------------------------------
         # Paragraphs
-        # -------------------------------------------------
+        # -----------------------------------------------------
 
         for paragraph in document.paragraphs:
 
             text = paragraph.text.strip()
 
             if text:
-                parts.append(text)
+                paragraphs.append(
+                    text
+                )
 
-        # -------------------------------------------------
+        # -----------------------------------------------------
         # Tables
-        # -------------------------------------------------
+        #
+        # Many CVs store important information
+        # inside tables.
+        # -----------------------------------------------------
 
         for table in document.tables:
 
@@ -258,184 +216,185 @@ def extract_docx(
                     text = cell.text.strip()
 
                     if text:
-                        cells.append(text)
+                        cells.append(
+                            text
+                        )
 
                 if cells:
 
-                    parts.append(
+                    paragraphs.append(
                         " | ".join(cells)
                     )
 
-        return clean_text(
-            "\n".join(parts)
+        text = "\n".join(
+            paragraphs
         )
+
+        text = clean_text(
+            text
+        )
+
+        if not text:
+
+            raise ResumeParsingError(
+                "No readable text was found in the DOCX resume."
+            )
+
+        return text
+
+    except ResumeParsingError:
+        raise
 
     except Exception as exc:
 
+        print(
+            "DOCX parsing error:",
+            repr(exc)
+        )
+
         raise ResumeParsingError(
-            f"Unable to read DOCX resume: {exc}"
+            "Unable to read the DOCX resume. "
+            "Please make sure the document is valid."
         ) from exc
 
 
-# =========================================================
+# =============================================================
 # TXT Parser
-# =========================================================
+# =============================================================
 
-def extract_txt(
-    file_bytes: bytes
-) -> str:
+def parse_txt(file_bytes):
     """
-    Extract text from a plain-text resume.
-
-    Attempts UTF-8 first and then falls back to
-    common encodings.
+    Extract text from a TXT resume.
     """
 
-    encodings = [
-        "utf-8",
-        "utf-8-sig",
-        "latin-1",
-    ]
+    try:
 
-    for encoding in encodings:
-
-        try:
-
-            return clean_text(
-                file_bytes.decode(
-                    encoding
-                )
+        if not file_bytes:
+            raise ResumeParsingError(
+                "The TXT file is empty."
             )
 
-        except UnicodeDecodeError:
+        encodings = [
+            "utf-8",
+            "utf-8-sig",
+            "cp1252",
+            "latin-1",
+        ]
 
-            continue
+        text = None
 
-    raise ResumeParsingError(
-        "Unable to decode the text resume."
-    )
+        for encoding in encodings:
 
+            try:
 
-# =========================================================
-# Main Parser
-# =========================================================
+                text = file_bytes.decode(
+                    encoding
+                )
 
-def parse_resume(
-    file_bytes: bytes,
-    filename: str
-) -> str:
-    """
-    Main resume parsing interface.
+                break
 
-    Parameters
-    ----------
-    file_bytes:
-        Uploaded resume contents.
+            except UnicodeDecodeError:
 
-    filename:
-        Original uploaded filename.
+                continue
 
-    Returns
-    -------
-    str
-        Cleaned resume text.
-    """
+        if text is None:
 
-    if not isinstance(
-        file_bytes,
-        bytes
-    ):
+            raise ResumeParsingError(
+                "Unable to decode the TXT resume."
+            )
 
-        raise ResumeParsingError(
-            "Resume data must be provided as bytes."
+        text = clean_text(
+            text
         )
 
-    extension = validate_resume(
-        filename=filename,
-        file_size=len(file_bytes)
+        if not text:
+
+            raise ResumeParsingError(
+                "No readable text was found in the TXT resume."
+            )
+
+        return text
+
+    except ResumeParsingError:
+        raise
+
+    except Exception as exc:
+
+        print(
+            "TXT parsing error:",
+            repr(exc)
+        )
+
+        raise ResumeParsingError(
+            "Unable to read the TXT resume."
+        ) from exc
+
+
+# =============================================================
+# Main Resume Parser
+# =============================================================
+
+def parse_resume(
+    file_bytes,
+    filename
+):
+    """
+    Automatically select the correct parser.
+
+    Supported:
+
+        .pdf
+        .docx
+        .txt
+    """
+
+    if not filename:
+
+        raise ResumeParsingError(
+            "Resume filename is missing."
+        )
+
+    extension = (
+        Path(filename)
+        .suffix
+        .lower()
     )
 
-    # -----------------------------------------------------
-    # Select parser
-    # -----------------------------------------------------
+    # =========================================================
+    # PDF
+    # =========================================================
 
     if extension == ".pdf":
 
-        text = extract_pdf(
+        return parse_pdf(
             file_bytes
         )
 
-    elif extension == ".docx":
+    # =========================================================
+    # DOCX
+    # =========================================================
 
-        text = extract_docx(
+    if extension == ".docx":
+
+        return parse_docx(
             file_bytes
         )
 
-    elif extension == ".txt":
+    # =========================================================
+    # TXT
+    # =========================================================
 
-        text = extract_txt(
+    if extension == ".txt":
+
+        return parse_txt(
             file_bytes
         )
 
-    else:
+    # =========================================================
+    # Unsupported
+    # =========================================================
 
-        raise ResumeParsingError(
-            f"Unsupported extension: {extension}"
-        )
-
-    # -----------------------------------------------------
-    # Final validation
-    # -----------------------------------------------------
-
-    text = clean_text(text)
-
-    if not text:
-
-        raise ResumeParsingError(
-            "No readable text could be extracted "
-            "from the resume."
-        )
-
-    # Prevent accidental processing of extremely
-    # large extracted documents.
-    #
-    # This protects the small Render instance from
-    # pathological input files.
-    MAX_TEXT_LENGTH = 200_000
-
-    if len(text) > MAX_TEXT_LENGTH:
-
-        text = text[:MAX_TEXT_LENGTH]
-
-    return text
-
-
-# =========================================================
-# Resume Information
-# =========================================================
-
-def get_resume_info(
-    filename: str,
-    text: str
-) -> dict:
-    """
-    Generate lightweight metadata about a parsed resume.
-
-    No sensitive personal information is extracted here.
-    """
-
-    return {
-        "filename": Path(
-            filename
-        ).name,
-
-        "format": Path(
-            filename
-        ).suffix.lower(),
-
-        "characters": len(text),
-
-        "words": len(
-            text.split()
-        ),
-    }
+    raise ResumeParsingError(
+        "Unsupported resume format. "
+        "Please upload a PDF, DOCX or TXT file."
+    )
