@@ -1,24 +1,38 @@
 /*
-===============================================================
+=============================================================
 TalentMatch AI
 Production Frontend Application
+=============================================================
 
-Responsibilities:
-• Resume upload
-• File validation
-• API communication
-• Loading state
-• Display AI job matches
-• Display candidate summary
-• Display extracted skills
-• Display interview recommendations
-• Safe rendering of backend objects
-• Robust error handling
-• Prevent [object Object] display
-===============================================================
+Designed for:
+
+- FastAPI backend
+- Render Free
+- CPU inference
+- Lazy model loading
+- PDF / DOCX / TXT resumes
+- Unreliable/slow first AI request
+- JSON and non-JSON backend failures
+- Safe frontend rendering
+
+IMPORTANT:
+The /analyze endpoint may take significantly longer on the
+first request because the AI prediction engine is loaded
+lazily.
+
+This frontend therefore:
+
+1. Uses an AbortController timeout.
+2. Detects empty server responses.
+3. Detects HTML/non-JSON responses.
+4. Gives useful messages for 500/502/503/504.
+5. Never displays [object Object].
+6. Prevents duplicate analysis requests.
+=============================================================
 */
 
 "use strict";
+
 
 // =============================================================
 // Configuration
@@ -33,6 +47,27 @@ const SUPPORTED_EXTENSIONS = [
     ".docx",
     ".txt"
 ];
+
+/*
+IMPORTANT:
+
+Render may need considerable time to perform the FIRST
+analysis because the AI model is loaded lazily.
+
+Do not use an extremely short timeout.
+
+20 minutes gives the backend enough time for:
+
+- cold start
+- model loading
+- embedding generation
+- job ranking
+- interview retrieval
+*/
+
+const ANALYSIS_TIMEOUT_MS =
+    20 * 60 * 1000;
+
 
 // =============================================================
 // DOM Elements
@@ -101,30 +136,19 @@ const bestMatchLevel =
 const averageMatchScore =
     document.getElementById("averageMatchScore");
 
+
 // =============================================================
-// Safe Value Conversion
+// Runtime State
 // =============================================================
 
-/*
-IMPORTANT:
+let analysisInProgress = false;
 
-The backend may return:
+let analysisAbortController = null;
 
-    string
-    number
-    boolean
-    list
-    dictionary/object
-    null
 
-JavaScript normally converts an object to:
-
-    [object Object]
-
-This function NEVER does that.
-
-Objects are converted recursively into readable text.
-*/
+// =============================================================
+// Utility: Safe Value -> Text
+// =============================================================
 
 function valueToText(value) {
 
@@ -135,7 +159,9 @@ function valueToText(value) {
         return "";
     }
 
-    if (typeof value === "string") {
+    if (
+        typeof value === "string"
+    ) {
         return value;
     }
 
@@ -146,41 +172,53 @@ function valueToText(value) {
         return String(value);
     }
 
-    if (Array.isArray(value)) {
+    if (
+        Array.isArray(value)
+    ) {
 
         return value
-            .map(item => valueToText(item))
-            .filter(text => text.length > 0)
+            .map(
+                item =>
+                    valueToText(item)
+            )
+            .filter(
+                text =>
+                    text.length > 0
+            )
             .join(", ");
     }
 
-    if (typeof value === "object") {
+    if (
+        typeof value === "object"
+    ) {
 
-        const entries =
-            Object.entries(value);
+        return Object.entries(value)
+            .map(
+                ([key, item]) => {
 
-        return entries
-            .map(([key, item]) => {
+                    const text =
+                        valueToText(item);
 
-                const text =
-                    valueToText(item);
+                    if (!text) {
+                        return "";
+                    }
 
-                if (!text) {
-                    return "";
+                    return `${key}: ${text}`;
                 }
-
-                return `${key}: ${text}`;
-
-            })
-            .filter(text => text.length > 0)
+            )
+            .filter(
+                text =>
+                    text.length > 0
+            )
             .join("; ");
     }
 
     return String(value);
 }
 
+
 // =============================================================
-// Safe Number Conversion
+// Utility: Safe Number
 // =============================================================
 
 function valueToNumber(value) {
@@ -210,8 +248,9 @@ function valueToNumber(value) {
     return number;
 }
 
+
 // =============================================================
-// HTML Escaping
+// Utility: HTML Escape
 // =============================================================
 
 function escapeHTML(value) {
@@ -228,13 +267,16 @@ function escapeHTML(value) {
     return div.innerHTML;
 }
 
+
 // =============================================================
-// Array Normalization
+// Utility: Normalize Array
 // =============================================================
 
 function normalizeArray(value) {
 
-    if (Array.isArray(value)) {
+    if (
+        Array.isArray(value)
+    ) {
         return value;
     }
 
@@ -249,8 +291,9 @@ function normalizeArray(value) {
     return [value];
 }
 
+
 // =============================================================
-// Score Normalization
+// Utility: Normalize Score
 // =============================================================
 
 function normalizeScore(value) {
@@ -288,19 +331,21 @@ function normalizeScore(value) {
     );
 }
 
+
 // =============================================================
-// File Size Formatting
+// Utility: File Size
 // =============================================================
 
 function formatFileSize(bytes) {
 
-    if (bytes < 1024) {
+    if (
+        bytes < 1024
+    ) {
         return `${bytes} B`;
     }
 
     if (
-        bytes <
-        1024 * 1024
+        bytes < 1024 * 1024
     ) {
         return `${(
             bytes / 1024
@@ -312,6 +357,7 @@ function formatFileSize(bytes) {
         (1024 * 1024)
     ).toFixed(2)} MB`;
 }
+
 
 // =============================================================
 // File Validation
@@ -328,12 +374,20 @@ function validateFile(file) {
         };
     }
 
+    const filename =
+        valueToText(
+            file.name
+        );
+
     const extension =
-        "." +
-        file.name
-            .split(".")
-            .pop()
-            .toLowerCase();
+        filename
+            .includes(".")
+            ? "." +
+              filename
+                  .split(".")
+                  .pop()
+                  .toLowerCase()
+            : "";
 
     if (
         !SUPPORTED_EXTENSIONS.includes(
@@ -344,8 +398,7 @@ function validateFile(file) {
         return {
             valid: false,
             message:
-                "Unsupported file format. " +
-                "Please upload a PDF, DOCX or TXT resume."
+                "Unsupported file format. Please upload a PDF, DOCX or TXT resume."
         };
     }
 
@@ -361,8 +414,7 @@ function validateFile(file) {
     }
 
     if (
-        file.size >
-        MAX_FILE_SIZE
+        file.size > MAX_FILE_SIZE
     ) {
 
         return {
@@ -378,8 +430,9 @@ function validateFile(file) {
     };
 }
 
+
 // =============================================================
-// Error Handling
+// Error Display
 // =============================================================
 
 function showError(message) {
@@ -400,6 +453,7 @@ function showError(message) {
     );
 }
 
+
 function hideError() {
 
     if (!errorMessage) {
@@ -414,6 +468,7 @@ function hideError() {
     );
 }
 
+
 // =============================================================
 // Selected File
 // =============================================================
@@ -424,174 +479,222 @@ function displaySelectedFile(file) {
         return;
     }
 
-    fileName.textContent =
-        valueToText(
-            file.name
-        );
+    if (fileName) {
 
-    fileSize.textContent =
-        formatFileSize(
-            file.size
-        );
+        fileName.textContent =
+            valueToText(
+                file.name
+            );
+    }
 
-    selectedFile.classList.remove(
-        "hidden"
-    );
+    if (fileSize) {
+
+        fileSize.textContent =
+            formatFileSize(
+                file.size
+            );
+    }
+
+    if (selectedFile) {
+
+        selectedFile.classList.remove(
+            "hidden"
+        );
+    }
 }
+
 
 function clearSelectedFile() {
 
-    resumeInput.value =
-        "";
+    if (resumeInput) {
 
-    selectedFile.classList.add(
-        "hidden"
-    );
+        resumeInput.value =
+            "";
+    }
 
-    fileName.textContent =
-        "";
+    if (selectedFile) {
 
-    fileSize.textContent =
-        "";
+        selectedFile.classList.add(
+            "hidden"
+        );
+    }
+
+    if (fileName) {
+
+        fileName.textContent =
+            "";
+    }
+
+    if (fileSize) {
+
+        fileSize.textContent =
+            "";
+    }
 }
+
 
 // =============================================================
 // File Selection
 // =============================================================
 
-resumeInput.addEventListener(
-    "change",
-    function () {
+if (resumeInput) {
 
-        hideError();
+    resumeInput.addEventListener(
+        "change",
+        function () {
 
-        const file =
-            resumeInput.files[0];
+            hideError();
 
-        if (!file) {
-            return;
-        }
+            const file =
+                resumeInput.files &&
+                resumeInput.files[0];
 
-        const validation =
-            validateFile(file);
+            if (!file) {
+                return;
+            }
 
-        if (!validation.valid) {
+            const validation =
+                validateFile(file);
 
-            showError(
-                validation.message
+            if (!validation.valid) {
+
+                showError(
+                    validation.message
+                );
+
+                clearSelectedFile();
+
+                return;
+            }
+
+            displaySelectedFile(
+                file
             );
-
-            clearSelectedFile();
-
-            return;
         }
+    );
+}
 
-        displaySelectedFile(file);
-    }
-);
 
 // =============================================================
 // Remove File
 // =============================================================
 
-removeFile.addEventListener(
-    "click",
-    function (event) {
+if (removeFile) {
 
-        event.preventDefault();
+    removeFile.addEventListener(
+        "click",
+        function (event) {
 
-        clearSelectedFile();
+            event.preventDefault();
 
-        hideError();
-    }
-);
+            clearSelectedFile();
+
+            hideError();
+        }
+    );
+}
+
 
 // =============================================================
 // Drag & Drop
 // =============================================================
 
-uploadArea.addEventListener(
-    "dragover",
-    function (event) {
+if (uploadArea) {
 
-        event.preventDefault();
+    uploadArea.addEventListener(
+        "dragover",
+        function (event) {
 
-        uploadArea.classList.add(
-            "dragging"
-        );
-    }
-);
+            event.preventDefault();
 
-uploadArea.addEventListener(
-    "dragleave",
-    function () {
-
-        uploadArea.classList.remove(
-            "dragging"
-        );
-    }
-);
-
-uploadArea.addEventListener(
-    "drop",
-    function (event) {
-
-        event.preventDefault();
-
-        uploadArea.classList.remove(
-            "dragging"
-        );
-
-        hideError();
-
-        const files =
-            event.dataTransfer.files;
-
-        if (
-            !files ||
-            !files.length
-        ) {
-            return;
+            uploadArea.classList.add(
+                "dragging"
+            );
         }
+    );
 
-        const file =
-            files[0];
 
-        const validation =
-            validateFile(file);
+    uploadArea.addEventListener(
+        "dragleave",
+        function () {
 
-        if (!validation.valid) {
+            uploadArea.classList.remove(
+                "dragging"
+            );
+        }
+    );
 
-            showError(
-                validation.message
+
+    uploadArea.addEventListener(
+        "drop",
+        function (event) {
+
+            event.preventDefault();
+
+            uploadArea.classList.remove(
+                "dragging"
             );
 
-            return;
-        }
+            hideError();
 
-        try {
+            const files =
+                event.dataTransfer &&
+                event.dataTransfer.files;
 
-            const dataTransfer =
-                new DataTransfer();
+            if (
+                !files ||
+                !files.length
+            ) {
+                return;
+            }
 
-            dataTransfer.items.add(
+            const file =
+                files[0];
+
+            const validation =
+                validateFile(file);
+
+            if (!validation.valid) {
+
+                showError(
+                    validation.message
+                );
+
+                return;
+            }
+
+            /*
+            Try to assign the dropped file to
+            the hidden file input.
+            */
+
+            try {
+
+                const dataTransfer =
+                    new DataTransfer();
+
+                dataTransfer.items.add(
+                    file
+                );
+
+                resumeInput.files =
+                    dataTransfer.files;
+
+            } catch (error) {
+
+                console.warn(
+                    "Unable to assign dropped file.",
+                    error
+                );
+            }
+
+            displaySelectedFile(
                 file
             );
-
-            resumeInput.files =
-                dataTransfer.files;
-
-        } catch (error) {
-
-            console.warn(
-                "Unable to assign dropped file.",
-                error
-            );
         }
+    );
+}
 
-        displaySelectedFile(file);
-    }
-);
 
 // =============================================================
 // Loading State
@@ -603,37 +706,62 @@ function setLoadingState(
 
     if (isLoading) {
 
-        analyzeButton.disabled =
-            true;
+        if (analyzeButton) {
 
-        buttonText.textContent =
-            "Analyzing...";
+            analyzeButton.disabled =
+                true;
+        }
 
-        buttonLoader.classList.remove(
-            "hidden"
-        );
+        if (buttonText) {
 
-        loadingSection.classList.remove(
-            "hidden"
-        );
+            buttonText.textContent =
+                "Analyzing...";
+        }
+
+        if (buttonLoader) {
+
+            buttonLoader.classList.remove(
+                "hidden"
+            );
+        }
+
+        if (loadingSection) {
+
+            loadingSection.classList.remove(
+                "hidden"
+            );
+        }
 
     } else {
 
-        analyzeButton.disabled =
-            false;
+        if (analyzeButton) {
 
-        buttonText.textContent =
-            "Analyze Resume";
+            analyzeButton.disabled =
+                false;
+        }
 
-        buttonLoader.classList.add(
-            "hidden"
-        );
+        if (buttonText) {
 
-        loadingSection.classList.add(
-            "hidden"
-        );
+            buttonText.textContent =
+                "Analyze Resume";
+        }
+
+        if (buttonLoader) {
+
+            buttonLoader.classList.add(
+                "hidden"
+            );
+        }
+
+        if (loadingSection) {
+
+            loadingSection.classList.add(
+                "hidden"
+            );
+        }
     }
 }
+
 
 // =============================================================
 // Reset Results
@@ -641,38 +769,65 @@ function setLoadingState(
 
 function resetResults() {
 
-    jobsContainer.innerHTML =
-        "";
+    if (jobsContainer) {
 
-    interviewContainer.innerHTML =
-        "";
+        jobsContainer.innerHTML =
+            "";
+    }
 
-    jobsAnalyzed.textContent =
-        "0";
+    if (interviewContainer) {
 
-    bestMatchScore.textContent =
-        "0%";
+        interviewContainer.innerHTML =
+            "";
+    }
 
-    bestMatchLevel.textContent =
-        "No Match";
+    if (jobsAnalyzed) {
 
-    averageMatchScore.textContent =
-        "0%";
+        jobsAnalyzed.textContent =
+            "0";
+    }
 
-    interviewSection.classList.add(
-        "hidden"
-    );
+    if (bestMatchScore) {
 
-    resultsSection.classList.add(
-        "hidden"
-    );
+        bestMatchScore.textContent =
+            "0%";
+    }
+
+    if (bestMatchLevel) {
+
+        bestMatchLevel.textContent =
+            "No Match";
+    }
+
+    if (averageMatchScore) {
+
+        averageMatchScore.textContent =
+            "0%";
+    }
+
+    if (interviewSection) {
+
+        interviewSection.classList.add(
+            "hidden"
+        );
+    }
+
+    if (resultsSection) {
+
+        resultsSection.classList.add(
+            "hidden"
+        );
+    }
 }
 
+
 // =============================================================
-// Extract Error Message From Backend
+// Backend Error Extraction
 // =============================================================
 
-function extractErrorMessage(data) {
+function extractErrorMessage(
+    data
+) {
 
     if (!data) {
 
@@ -682,25 +837,48 @@ function extractErrorMessage(data) {
     }
 
     /*
-    FastAPI commonly returns:
+    Standard FastAPI response:
 
         {
             "detail": "..."
         }
 
-    Your application may return:
+    Application response:
 
         {
             "error": "..."
         }
 
-    It may also return an object.
     */
 
+    if (
+        typeof data === "string"
+    ) {
+
+        return data.trim() ||
+            "The server returned an empty response.";
+    }
+
+    if (
+        typeof data !== "object"
+    ) {
+
+        return valueToText(
+            data
+        );
+    }
+
     const candidates = [
+
         data.error,
+
         data.detail,
-        data.message
+
+        data.message,
+
+        data.msg,
+
+        data.exception
     ];
 
     for (
@@ -723,176 +901,522 @@ function extractErrorMessage(data) {
     );
 }
 
+
+// =============================================================
+// HTTP Error Explanation
+// =============================================================
+
+function getHTTPErrorMessage(
+    status
+) {
+
+    switch (status) {
+
+        case 400:
+
+            return (
+                "The uploaded resume could not be processed. " +
+                "Please check that the file is a valid PDF, DOCX or TXT document."
+            );
+
+        case 413:
+
+            return (
+                "The uploaded resume is too large."
+            );
+
+        case 429:
+
+            return (
+                "The service is currently busy. " +
+                "Please wait a moment and try again."
+            );
+
+        case 500:
+
+            return (
+                "TalentMatch AI encountered an internal server error while analyzing the resume."
+            );
+
+        case 502:
+
+            return (
+                "The AI service connection was interrupted. " +
+                "Please try the analysis again."
+            );
+
+        case 503:
+
+            return (
+                "TalentMatch AI is temporarily unavailable. " +
+                "The AI model may still be loading or the server may have run out of memory."
+            );
+
+        case 504:
+
+            return (
+                "The analysis request timed out on the server. " +
+                "The AI model may still be initializing. Please try again."
+            );
+
+        default:
+
+            return (
+                `The server returned HTTP ${status}.`
+            );
+    }
+}
+
+
+// =============================================================
+// Fetch JSON Safely
+// =============================================================
+
+async function fetchAnalysis(
+    formData
+) {
+
+    /*
+    AbortController allows the frontend to stop waiting
+    forever if the Render service becomes unresponsive.
+    */
+
+    analysisAbortController =
+        new AbortController();
+
+    const timeout =
+        setTimeout(
+            function () {
+
+                if (
+                    analysisAbortController
+                ) {
+
+                    analysisAbortController.abort();
+                }
+
+            },
+            ANALYSIS_TIMEOUT_MS
+        );
+
+
+    try {
+
+        const response =
+            await fetch(
+                API_ENDPOINT,
+                {
+                    method: "POST",
+
+                    body: formData,
+
+                    /*
+                    DO NOT manually set Content-Type.
+
+                    Browser must generate the multipart
+                    boundary automatically.
+                    */
+
+                    signal:
+                        analysisAbortController.signal,
+
+                    headers: {
+
+                        "Accept":
+                            "application/json"
+                    }
+                }
+            );
+
+
+        /*
+        Read the response as text FIRST.
+
+        This prevents:
+
+            response.json()
+
+        from crashing when Render/FastAPI returns:
+
+        - empty body
+        - HTML
+        - proxy error
+        - plain text
+        */
+
+        const responseText =
+            await response.text();
+
+
+        console.log(
+            "TalentMatch HTTP status:",
+            response.status
+        );
+
+        console.log(
+            "TalentMatch response length:",
+            responseText.length
+        );
+
+
+        /*
+        EMPTY RESPONSE
+        */
+
+        if (
+            !responseText ||
+            !responseText.trim()
+        ) {
+
+            throw new Error(
+                response.ok
+                    ? (
+                        "The server returned an empty response. " +
+                        "The AI analysis may have stopped before producing a result."
+                    )
+                    : getHTTPErrorMessage(
+                        response.status
+                    )
+            );
+        }
+
+
+        /*
+        Attempt JSON parsing.
+        */
+
+        let data = null;
+
+        try {
+
+            data =
+                JSON.parse(
+                    responseText
+                );
+
+        } catch (
+            jsonError
+        ) {
+
+            console.error(
+                "Non-JSON server response:",
+                responseText.substring(
+                    0,
+                    1000
+                )
+            );
+
+            /*
+            Render or a reverse proxy can sometimes
+            return HTML instead of FastAPI JSON.
+            */
+
+            if (
+                !response.ok
+            ) {
+
+                throw new Error(
+                    getHTTPErrorMessage(
+                        response.status
+                    )
+                );
+            }
+
+            throw new Error(
+                "The server returned an invalid response instead of JSON."
+            );
+        }
+
+
+        console.log(
+            "TalentMatch AI response:",
+            data
+        );
+
+
+        /*
+        HTTP ERROR
+        */
+
+        if (
+            !response.ok
+        ) {
+
+            const backendMessage =
+                extractErrorMessage(
+                    data
+                );
+
+            /*
+            Prefer useful backend error when available.
+            */
+
+            if (
+                backendMessage &&
+                backendMessage !==
+                    "Resume analysis failed."
+            ) {
+
+                throw new Error(
+                    backendMessage
+                );
+            }
+
+            throw new Error(
+                getHTTPErrorMessage(
+                    response.status
+                )
+            );
+        }
+
+
+        /*
+        APPLICATION ERROR
+        */
+
+        if (
+            data &&
+            data.success === false
+        ) {
+
+            throw new Error(
+                extractErrorMessage(
+                    data
+                )
+            );
+        }
+
+
+        /*
+        Validate that the backend returned an object.
+        */
+
+        if (
+            !data ||
+            typeof data !== "object" ||
+            Array.isArray(data)
+        ) {
+
+            throw new Error(
+                "The AI returned an invalid response."
+            );
+        }
+
+
+        return data;
+
+    } finally {
+
+        clearTimeout(
+            timeout
+        );
+
+        analysisAbortController =
+            null;
+    }
+}
+
+
+// =============================================================
+// User-Friendly Request Error
+// =============================================================
+
+function formatRequestError(
+    error
+) {
+
+    if (!error) {
+
+        return (
+            "An unknown error occurred."
+        );
+    }
+
+
+    /*
+    Timeout / AbortController
+    */
+
+    if (
+        error.name ===
+        "AbortError"
+    ) {
+
+        return (
+            "The analysis is taking longer than expected. " +
+            "The server may be loading the AI model for the first time. " +
+            "Please try again."
+        );
+    }
+
+
+    /*
+    Browser network failure
+    */
+
+    if (
+        error instanceof TypeError
+    ) {
+
+        return (
+            "Unable to connect to the TalentMatch AI server. " +
+            "Please check your internet connection and try again."
+        );
+    }
+
+
+    return (
+        valueToText(
+            error.message ||
+            error
+        ) ||
+        "Resume analysis failed."
+    );
+}
+
+
 // =============================================================
 // Submit Resume
 // =============================================================
 
-resumeForm.addEventListener(
-    "submit",
-    async function (event) {
+if (resumeForm) {
 
-        event.preventDefault();
+    resumeForm.addEventListener(
+        "submit",
+        async function (event) {
 
-        hideError();
-
-        const file =
-            resumeInput.files[0];
-
-        const validation =
-            validateFile(file);
-
-        if (!validation.valid) {
-
-            showError(
-                validation.message
-            );
-
-            return;
-        }
-
-        resetResults();
-
-        setLoadingState(true);
-
-        try {
+            event.preventDefault();
 
             /*
-            IMPORTANT:
+            Prevent duplicate requests.
 
-            FastAPI endpoint:
-
-                file: UploadFile = File(...)
-
-            Therefore the multipart
-            field MUST be:
-
-                "file"
+            This is important because two simultaneous
+            requests could cause two model-loading attempts.
             */
 
-            const formData =
-                new FormData();
+            if (
+                analysisInProgress
+            ) {
 
-            formData.append(
-                "file",
-                file
-            );
+                return;
+            }
 
-            const response =
-                await fetch(
-                    API_ENDPOINT,
-                    {
-                        method: "POST",
-                        body: formData
-                    }
+            hideError();
+
+
+            const file =
+                resumeInput &&
+                resumeInput.files &&
+                resumeInput.files[0];
+
+
+            const validation =
+                validateFile(file);
+
+
+            if (
+                !validation.valid
+            ) {
+
+                showError(
+                    validation.message
                 );
 
-            let data;
+                return;
+            }
 
-            /*
-            Always attempt JSON first.
-            */
 
-            const responseText =
-                await response.text();
+            resetResults();
+
+
+            analysisInProgress =
+                true;
+
+
+            setLoadingState(
+                true
+            );
+
 
             try {
 
-                data =
-                    responseText
-                        ? JSON.parse(
-                            responseText
-                        )
-                        : null;
+                /*
+                FastAPI expects:
 
-            } catch (
-                jsonError
-            ) {
+                    file: UploadFile = File(...)
+
+                Therefore:
+
+                    formData.append("file", file)
+                */
+
+                const formData =
+                    new FormData();
+
+
+                formData.append(
+                    "file",
+                    file
+                );
+
+
+                console.log(
+                    "Starting TalentMatch AI analysis..."
+                );
+
+
+                const data =
+                    await fetchAnalysis(
+                        formData
+                    );
+
+
+                displayResults(
+                    data
+                );
+
+
+            } catch (error) {
 
                 console.error(
-                    "Invalid JSON response:",
-                    responseText
+                    "TalentMatch AI analysis error:",
+                    error
                 );
 
-                throw new Error(
-                    "The server returned an invalid response."
+
+                const message =
+                    formatRequestError(
+                        error
+                    );
+
+
+                showError(
+                    message
                 );
-            }
 
-            console.log(
-                "TalentMatch AI response:",
-                data
-            );
 
-            /*
-            HTTP-level error
-            */
+            } finally {
 
-            if (!response.ok) {
+                analysisInProgress =
+                    false;
 
-                throw new Error(
-                    extractErrorMessage(
-                        data
-                    )
-                );
-            }
 
-            /*
-            Application-level error
-            */
-
-            if (
-                data &&
-                data.success === false
-            ) {
-
-                throw new Error(
-                    extractErrorMessage(
-                        data
-                    )
+                setLoadingState(
+                    false
                 );
             }
-
-            /*
-            Validate expected response.
-            */
-
-            if (
-                !data ||
-                typeof data !== "object"
-            ) {
-
-                throw new Error(
-                    "The AI returned an invalid response."
-                );
-            }
-
-            displayResults(data);
-
-        } catch (error) {
-
-            console.error(
-                "TalentMatch AI error:",
-                error
-            );
-
-            showError(
-                error instanceof Error
-                    ? error.message
-                    : valueToText(error)
-            );
-
-        } finally {
-
-            setLoadingState(false);
         }
-    }
-);
+    );
+}
+
 
 // =============================================================
 // Display Results
 // =============================================================
 
-function displayResults(data) {
+function displayResults(
+    data
+) {
 
     if (
         !data ||
@@ -906,10 +1430,12 @@ function displayResults(data) {
         return;
     }
 
+
     console.log(
         "Displaying TalentMatch AI results:",
         data
     );
+
 
     const summary =
         (
@@ -919,16 +1445,19 @@ function displayResults(data) {
             ? data.summary
             : {};
 
+
     const jobs =
         normalizeArray(
             data.jobs
         );
+
 
     const interviews =
         normalizeArray(
             data.interviews ||
             data.interview_questions
         );
+
 
     // =========================================================
     // Jobs Analyzed
@@ -939,24 +1468,26 @@ function displayResults(data) {
             summary.jobs_analyzed
         );
 
-    /*
-    If the backend does not provide the number,
-    use the number of returned jobs.
-    */
 
     if (
         analyzedCount <= 0
     ) {
+
         analyzedCount =
             jobs.length;
     }
 
-    jobsAnalyzed.textContent =
-        String(
-            Math.round(
-                analyzedCount
-            )
-        );
+
+    if (jobsAnalyzed) {
+
+        jobsAnalyzed.textContent =
+            String(
+                Math.round(
+                    analyzedCount
+                )
+            );
+    }
+
 
     // =========================================================
     // Best Match
@@ -964,6 +1495,7 @@ function displayResults(data) {
 
     let bestScoreValue =
         summary.best_match_score;
+
 
     if (
         bestScoreValue === null ||
@@ -973,6 +1505,7 @@ function displayResults(data) {
         bestScoreValue =
             summary.best_score;
     }
+
 
     if (
         (
@@ -993,22 +1526,35 @@ function displayResults(data) {
                 : 0;
     }
 
+
     const best =
         normalizeScore(
             bestScoreValue
         );
 
-    bestMatchScore.textContent =
-        `${best}%`;
+
+    if (bestMatchScore) {
+
+        bestMatchScore.textContent =
+            `${best}%`;
+    }
+
 
     const backendMatchLevel =
         summary.best_match_level;
 
-    bestMatchLevel.textContent =
-        escapeHTML(
-            backendMatchLevel ||
-            getClientMatchLevel(best)
-        );
+
+    if (bestMatchLevel) {
+
+        bestMatchLevel.textContent =
+            valueToText(
+                backendMatchLevel ||
+                getClientMatchLevel(
+                    best
+                )
+            );
+    }
+
 
     // =========================================================
     // Average Match
@@ -1016,6 +1562,7 @@ function displayResults(data) {
 
     let averageValue =
         summary.average_match_score;
+
 
     if (
         averageValue === null ||
@@ -1025,6 +1572,7 @@ function displayResults(data) {
         averageValue =
             summary.average_score;
     }
+
 
     if (
         averageValue === null ||
@@ -1037,13 +1585,19 @@ function displayResults(data) {
             );
     }
 
+
     const average =
         normalizeScore(
             averageValue
         );
 
-    averageMatchScore.textContent =
-        `${average}%`;
+
+    if (averageMatchScore) {
+
+        averageMatchScore.textContent =
+            `${average}%`;
+    }
+
 
     // =========================================================
     // Render
@@ -1053,13 +1607,19 @@ function displayResults(data) {
         jobs
     );
 
+
     renderInterviews(
         interviews
     );
 
-    resultsSection.classList.remove(
-        "hidden"
-    );
+
+    if (resultsSection) {
+
+        resultsSection.classList.remove(
+            "hidden"
+        );
+    }
+
 
     // =========================================================
     // Scroll to Results
@@ -1068,15 +1628,24 @@ function displayResults(data) {
     setTimeout(
         function () {
 
-            resultsSection.scrollIntoView({
-                behavior: "smooth",
-                block: "start"
-            });
+            if (
+                resultsSection
+            ) {
+
+                resultsSection.scrollIntoView({
+                    behavior:
+                        "smooth",
+
+                    block:
+                        "start"
+                });
+            }
 
         },
         100
     );
 }
+
 
 // =============================================================
 // Calculate Average Score
@@ -1089,8 +1658,10 @@ function calculateAverageScore(
     if (
         !jobs.length
     ) {
+
         return 0;
     }
+
 
     const scores =
         jobs.map(
@@ -1100,8 +1671,10 @@ function calculateAverageScore(
                     !job ||
                     typeof job !== "object"
                 ) {
+
                     return 0;
                 }
+
 
                 return normalizeScore(
                     job.match_score ??
@@ -1111,6 +1684,7 @@ function calculateAverageScore(
             }
         );
 
+
     const validScores =
         scores.filter(
             score =>
@@ -1119,11 +1693,14 @@ function calculateAverageScore(
                 )
         );
 
+
     if (
         !validScores.length
     ) {
+
         return 0;
     }
+
 
     const total =
         validScores.reduce(
@@ -1135,6 +1712,7 @@ function calculateAverageScore(
             0
         );
 
+
     return Number(
         (
             total /
@@ -1142,6 +1720,7 @@ function calculateAverageScore(
         ).toFixed(2)
     );
 }
+
 
 // =============================================================
 // Render Jobs
@@ -1151,8 +1730,14 @@ function renderJobs(
     jobs
 ) {
 
+    if (!jobsContainer) {
+        return;
+    }
+
+
     jobsContainer.innerHTML =
         "";
+
 
     if (
         !jobs.length
@@ -1176,6 +1761,7 @@ function renderJobs(
         return;
     }
 
+
     jobs.forEach(
         function (
             job,
@@ -1188,12 +1774,14 @@ function renderJobs(
                     index
                 );
 
+
             jobsContainer.appendChild(
                 card
             );
         }
     );
 }
+
 
 // =============================================================
 // Create Job Card
@@ -1204,16 +1792,13 @@ function createJobCard(
     index
 ) {
 
-    /*
-    Guarantee that job is an object.
-    */
-
     if (
         !job ||
         typeof job !== "object"
     ) {
 
         job = {
+
             title:
                 valueToText(
                     job
@@ -1221,13 +1806,16 @@ function createJobCard(
         };
     }
 
+
     const card =
         document.createElement(
             "article"
         );
 
+
     card.className =
         "job-card";
+
 
     // =========================================================
     // Scores
@@ -1240,6 +1828,7 @@ function createJobCard(
             0
         );
 
+
     const semantic =
         normalizeScore(
             job.semantic_score ??
@@ -1247,6 +1836,7 @@ function createJobCard(
             job.semantic_similarity ??
             0
         );
+
 
     const keyword =
         normalizeScore(
@@ -1256,6 +1846,7 @@ function createJobCard(
             job.keyword_match ??
             0
         );
+
 
     // =========================================================
     // Basic Information
@@ -1267,6 +1858,7 @@ function createJobCard(
             index + 1
         );
 
+
     const category =
         escapeHTML(
             job.category ||
@@ -1275,11 +1867,13 @@ function createJobCard(
             "Job Opportunity"
         );
 
+
     const description =
         escapeHTML(
             job.description ||
             "No job description available."
         );
+
 
     const requirements =
         escapeHTML(
@@ -1288,11 +1882,13 @@ function createJobCard(
             "No requirements provided."
         );
 
+
     const benefits =
         escapeHTML(
             job.benefits ||
             ""
         );
+
 
     const matchLevel =
         escapeHTML(
@@ -1301,6 +1897,7 @@ function createJobCard(
                 score
             )
         );
+
 
     // =========================================================
     // Strengths
@@ -1312,6 +1909,7 @@ function createJobCard(
             job.matching_strengths ||
             []
         );
+
 
     const strengthsHTML =
         strengths.length
@@ -1348,6 +1946,7 @@ function createJobCard(
             `
             : "";
 
+
     // =========================================================
     // Matching Skills
     // =========================================================
@@ -1360,6 +1959,7 @@ function createJobCard(
             []
         );
 
+
     const missingSkills =
         normalizeArray(
             job.missing_skills ||
@@ -1367,6 +1967,7 @@ function createJobCard(
             job.missing ||
             []
         );
+
 
     const skillsHTML =
         (
@@ -1396,6 +1997,7 @@ function createJobCard(
                             : ""
                     }
 
+
                     ${
                         missingSkills.length
                             ? `
@@ -1420,8 +2022,9 @@ function createJobCard(
             `
             : "";
 
+
     // =========================================================
-    // Candidate Fit / Skill Details
+    // Skill Evidence
     // =========================================================
 
     const skillDetails =
@@ -1429,6 +2032,7 @@ function createJobCard(
             job.skill_details ||
             []
         );
+
 
     const skillDetailsHTML =
         skillDetails.length
@@ -1465,6 +2069,7 @@ function createJobCard(
             `
             : "";
 
+
     // =========================================================
     // Build Card
     // =========================================================
@@ -1477,6 +2082,7 @@ function createJobCard(
                 #${escapeHTML(rank)}
             </div>
 
+
             <div class="job-title-area">
 
                 <h4>
@@ -1488,6 +2094,7 @@ function createJobCard(
                 </span>
 
             </div>
+
 
             <div class="match-score">
 
@@ -1602,8 +2209,10 @@ function createJobCard(
         </div>
     `;
 
+
     return card;
 }
+
 
 // =============================================================
 // Client Match Level
@@ -1618,32 +2227,42 @@ function getClientMatchLevel(
             score
         );
 
+
     if (
         score >= 85
     ) {
+
         return "Excellent Match";
     }
+
 
     if (
         score >= 70
     ) {
+
         return "Strong Match";
     }
+
 
     if (
         score >= 55
     ) {
+
         return "Moderate Match";
     }
+
 
     if (
         score >= 40
     ) {
+
         return "Developing Match";
     }
 
+
     return "Low Match";
 }
+
 
 // =============================================================
 // Render Interviews
@@ -1653,23 +2272,37 @@ function renderInterviews(
     questions
 ) {
 
+    if (!interviewContainer) {
+        return;
+    }
+
+
     interviewContainer.innerHTML =
         "";
+
 
     if (
         !questions.length
     ) {
 
-        interviewSection.classList.add(
-            "hidden"
-        );
+        if (interviewSection) {
+
+            interviewSection.classList.add(
+                "hidden"
+            );
+        }
 
         return;
     }
 
-    interviewSection.classList.remove(
-        "hidden"
-    );
+
+    if (interviewSection) {
+
+        interviewSection.classList.remove(
+            "hidden"
+        );
+    }
+
 
     questions.forEach(
         function (
@@ -1683,12 +2316,14 @@ function renderInterviews(
                     index
                 );
 
+
             interviewContainer.appendChild(
                 card
             );
         }
     );
 }
+
 
 // =============================================================
 // Create Interview Card
@@ -1699,16 +2334,13 @@ function createInterviewCard(
     index
 ) {
 
-    /*
-    Guarantee object safety.
-    */
-
     if (
         !question ||
         typeof question !== "object"
     ) {
 
         question = {
+
             question:
                 valueToText(
                     question
@@ -1716,19 +2348,23 @@ function createInterviewCard(
         };
     }
 
+
     const card =
         document.createElement(
             "article"
         );
 
+
     card.className =
         "interview-card";
+
 
     const rank =
         valueToText(
             question.rank ||
             index + 1
         );
+
 
     const relevance =
         normalizeScore(
@@ -1738,6 +2374,7 @@ function createInterviewCard(
             0
         );
 
+
     const questionText =
         escapeHTML(
             question.question ||
@@ -1745,6 +2382,7 @@ function createInterviewCard(
             question.prompt ||
             ""
         );
+
 
     const answer =
         escapeHTML(
@@ -1754,11 +2392,13 @@ function createInterviewCard(
             ""
         );
 
+
     const role =
         escapeHTML(
             question.role ||
             ""
         );
+
 
     const category =
         escapeHTML(
@@ -1766,17 +2406,20 @@ function createInterviewCard(
             ""
         );
 
+
     const difficulty =
         escapeHTML(
             question.difficulty ||
             ""
         );
 
+
     const experience =
         escapeHTML(
             question.experience ||
             ""
         );
+
 
     card.innerHTML = `
 
@@ -1785,6 +2428,7 @@ function createInterviewCard(
             <div class="interview-number">
                 ${escapeHTML(rank)}
             </div>
+
 
             <div class="interview-meta">
 
@@ -1798,6 +2442,7 @@ function createInterviewCard(
                         : ""
                 }
 
+
                 ${
                     category
                         ? `
@@ -1808,6 +2453,7 @@ function createInterviewCard(
                         : ""
                 }
 
+
                 ${
                     difficulty
                         ? `
@@ -1817,6 +2463,7 @@ function createInterviewCard(
                         `
                         : ""
                 }
+
 
                 ${
                     experience
@@ -1829,6 +2476,7 @@ function createInterviewCard(
                 }
 
             </div>
+
 
             <div class="interview-score">
                 ${relevance}%
@@ -1870,29 +2518,50 @@ function createInterviewCard(
 
     `;
 
+
     return card;
 }
+
 
 // =============================================================
 // New Analysis
 // =============================================================
 
-newAnalysis.addEventListener(
-    "click",
-    function () {
+if (newAnalysis) {
 
-        resetResults();
+    newAnalysis.addEventListener(
+        "click",
+        function () {
 
-        clearSelectedFile();
+            /*
+            Do not allow reset while a request is
+            currently being processed.
+            */
 
-        hideError();
+            if (
+                analysisInProgress
+            ) {
 
-        window.scrollTo({
-            top: 0,
-            behavior: "smooth"
-        });
-    }
-);
+                return;
+            }
+
+
+            resetResults();
+
+            clearSelectedFile();
+
+            hideError();
+
+
+            window.scrollTo({
+                top: 0,
+                behavior:
+                    "smooth"
+            });
+        }
+    );
+}
+
 
 // =============================================================
 // Prevent Browser Navigation During Drag & Drop
@@ -1906,6 +2575,7 @@ window.addEventListener(
     }
 );
 
+
 window.addEventListener(
     "drop",
     function (event) {
@@ -1913,6 +2583,7 @@ window.addEventListener(
         event.preventDefault();
     }
 );
+
 
 // =============================================================
 // Startup
@@ -1926,6 +2597,12 @@ document.addEventListener(
 
         console.log(
             "TalentMatch AI frontend initialized successfully."
+        );
+
+        console.log(
+            "Analysis timeout:",
+            ANALYSIS_TIMEOUT_MS / 1000,
+            "seconds"
         );
     }
 );
