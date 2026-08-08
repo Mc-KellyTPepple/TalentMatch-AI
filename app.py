@@ -3,9 +3,9 @@ TalentMatch AI
 Production FastAPI Application
 
 Designed for:
-Render Free
-512 MB RAM
-CPU inference
+    Render Free
+    512 MB RAM
+    CPU inference
 
 Architecture:
 
@@ -80,6 +80,7 @@ from config import (
 from resume_parser import (
     parse_resume,
     ResumeParsingError,
+    parser_status,
 )
 
 from predict import engine
@@ -115,7 +116,9 @@ app = FastAPI(
 
 app.mount(
     "/static",
-    StaticFiles(directory="static"),
+    StaticFiles(
+        directory="static"
+    ),
     name="static",
 )
 
@@ -130,29 +133,28 @@ templates = Jinja2Templates(
 
 
 # ============================================================
-# Helper: Convert Errors to Readable Text
+# Helper: Readable Error
 # ============================================================
 
 def readable_error(error):
     """
-    Convert any exception/object into a clean string.
+    Convert an exception/object into a clean string.
 
-    This prevents the frontend from displaying:
+    Prevents the frontend from displaying:
 
         [object Object]
-
-    when JavaScript receives a dictionary/object.
     """
 
     if error is None:
+
         return "An unknown error occurred."
 
     if isinstance(error, str):
+
         return error
 
     if isinstance(error, dict):
 
-        # Prefer common error fields.
         for key in (
             "error",
             "message",
@@ -160,19 +162,27 @@ def readable_error(error):
             "msg",
         ):
 
-            value = error.get(key)
+            value = error.get(
+                key
+            )
 
             if value:
 
-                if isinstance(value, str):
+                if isinstance(
+                    value,
+                    str,
+                ):
+
                     return value
 
                 return str(value)
 
-        # Fallback
         return str(error)
 
-    if isinstance(error, (list, tuple)):
+    if isinstance(
+        error,
+        (list, tuple),
+    ):
 
         return "; ".join(
             str(item)
@@ -194,7 +204,7 @@ def error_response(
     Return a consistent JSON error response.
 
     IMPORTANT:
-    'error' is always a string.
+        error is ALWAYS a string.
     """
 
     return JSONResponse(
@@ -224,17 +234,19 @@ def health_check():
     """
     Lightweight Render health check.
 
-    This endpoint intentionally does not perform
-    AI inference.
+    Does not perform AI inference.
     """
 
     return {
 
-        "status": "healthy",
+        "status":
+            "healthy",
 
-        "service": "TalentMatch AI",
+        "service":
+            "TalentMatch AI",
 
-        "version": "1.0.0",
+        "version":
+            "1.0.0",
     }
 
 
@@ -258,7 +270,8 @@ async def home(
         "index.html",
 
         {
-            "request": request,
+            "request":
+                request,
         },
     )
 
@@ -296,8 +309,11 @@ async def analyze_resume(
     and is not permanently stored.
     """
 
-    file_bytes = None
+    # --------------------------------------------------------
+    # Temporary references
+    # --------------------------------------------------------
 
+    file_bytes = None
     resume_text = None
     skill_details = None
     detected_skills = None
@@ -308,7 +324,7 @@ async def analyze_resume(
     try:
 
         # ====================================================
-        # Validate Filename
+        # Validate filename
         # ====================================================
 
         if not file.filename:
@@ -320,7 +336,7 @@ async def analyze_resume(
 
 
         # ====================================================
-        # Validate Extension
+        # Validate extension
         # ====================================================
 
         filename = file.filename.lower()
@@ -347,7 +363,7 @@ async def analyze_resume(
 
 
         # ====================================================
-        # Read Uploaded File
+        # Read uploaded file
         # ====================================================
 
         file_bytes = await file.read()
@@ -358,7 +374,7 @@ async def analyze_resume(
 
 
         # ====================================================
-        # Validate File Size
+        # Validate size
         # ====================================================
 
         if file_size <= 0:
@@ -396,6 +412,10 @@ async def analyze_resume(
         )
 
 
+        # ====================================================
+        # Verify extracted text
+        # ====================================================
+
         if not resume_text:
 
             return error_response(
@@ -410,10 +430,8 @@ async def analyze_resume(
 
 
         # ====================================================
-        # Release Raw File Immediately
+        # Release raw file
         # ====================================================
-
-        del file_bytes
 
         file_bytes = None
 
@@ -433,7 +451,7 @@ async def analyze_resume(
 
 
         # ====================================================
-        # Safety Check
+        # Normalize Skill Details
         # ====================================================
 
         if skill_details is None:
@@ -457,7 +475,10 @@ async def analyze_resume(
 
         for item in skill_details:
 
-            if isinstance(item, dict):
+            if isinstance(
+                item,
+                dict,
+            ):
 
                 skill = item.get(
                     "skill"
@@ -469,7 +490,10 @@ async def analyze_resume(
                         str(skill)
                     )
 
-            elif isinstance(item, str):
+            elif isinstance(
+                item,
+                str,
+            ):
 
                 detected_skills.append(
                     item
@@ -502,7 +526,7 @@ async def analyze_resume(
 
 
         # ====================================================
-        # Validate Analysis
+        # Validate Ranking Response
         # ====================================================
 
         if not isinstance(
@@ -511,7 +535,8 @@ async def analyze_resume(
         ):
 
             raise RuntimeError(
-                "The job ranking engine returned an invalid response."
+                "The job ranking engine returned "
+                "an invalid response."
             )
 
 
@@ -527,10 +552,28 @@ async def analyze_resume(
 
 
         if jobs is None:
+
+            jobs = []
+
+
+        if not isinstance(
+            jobs,
+            list,
+        ):
+
             jobs = []
 
 
         if summary is None:
+
+            summary = {}
+
+
+        if not isinstance(
+            summary,
+            dict,
+        ):
+
             summary = {}
 
 
@@ -552,7 +595,7 @@ async def analyze_resume(
 
 
         # ====================================================
-        # Format Interview Results
+        # Format Interview Questions
         # ====================================================
 
         interview_results = (
@@ -570,6 +613,14 @@ async def analyze_resume(
             interview_results = []
 
 
+        if not isinstance(
+            interview_results,
+            list,
+        ):
+
+            interview_results = []
+
+
         # ====================================================
         # Candidate Skill Summary
         # ====================================================
@@ -577,7 +628,9 @@ async def analyze_resume(
         skill_summary = {
 
             "total_detected":
-                len(detected_skills),
+                len(
+                    detected_skills
+                ),
 
             "skills":
                 detected_skills,
@@ -593,7 +646,8 @@ async def analyze_resume(
 
         response = {
 
-            "success": True,
+            "success":
+                True,
 
             "summary":
                 summary,
@@ -610,7 +664,7 @@ async def analyze_resume(
 
 
         # ====================================================
-        # Return Response
+        # Return JSON
         # ====================================================
 
         return JSONResponse(
@@ -710,6 +764,41 @@ async def analyze_resume(
 
 
 # ============================================================
+# Parser Status
+# ============================================================
+
+@app.get(
+    "/api/parser/status",
+    response_class=JSONResponse,
+)
+def parser_status_endpoint():
+    """
+    Return the active resume parser configuration.
+
+    This is especially useful for confirming that Render
+    is actually running the new pypdf implementation.
+    """
+
+    try:
+
+        return parser_status()
+
+    except Exception as exc:
+
+        print(
+            "Parser status error:",
+            repr(exc),
+        )
+
+        return error_response(
+
+            str(exc),
+
+            status_code=500,
+        )
+
+
+# ============================================================
 # Skill Engine Status
 # ============================================================
 
@@ -720,8 +809,6 @@ async def analyze_resume(
 def skills_status():
     """
     Return the status of the skill extraction engine.
-
-    Useful for deployment diagnostics.
     """
 
     try:
@@ -732,7 +819,8 @@ def skills_status():
 
             return {
 
-                "status": "unknown",
+                "status":
+                    "unknown",
 
                 "message":
                     "Skill engine returned no status.",
@@ -785,6 +873,12 @@ def api_info():
 
             "Resume parsing",
 
+            "PDF parsing with pypdf",
+
+            "DOCX parsing with python-docx",
+
+            "TXT parsing",
+
             "Semantic job matching",
 
             "TF-IDF keyword matching",
@@ -807,6 +901,12 @@ def api_info():
 
             "TXT",
         ],
+
+        "pdf_engine":
+            "pypdf",
+
+        "pymupdf_required":
+            False,
 
         "deployment": {
 
@@ -834,11 +934,31 @@ def readiness_check():
     """
     Determine whether the application has its critical
     runtime components available.
-
-    Unlike /health, this checks the skill artifact layer.
     """
 
     try:
+
+        # ----------------------------------------------------
+        # Parser status
+        # ----------------------------------------------------
+
+        current_parser_status = parser_status()
+
+        parser_ready = (
+            isinstance(
+                current_parser_status,
+                dict,
+            )
+            and
+            current_parser_status.get(
+                "status"
+            ) == "ready"
+        )
+
+
+        # ----------------------------------------------------
+        # Skill engine status
+        # ----------------------------------------------------
 
         skill_status = skill_engine_status()
 
@@ -848,22 +968,7 @@ def readiness_check():
             dict,
         ):
 
-            return JSONResponse(
-
-                status_code=503,
-
-                content={
-
-                    "status":
-                        "not_ready",
-
-                    "prediction_engine":
-                        "loaded",
-
-                    "skill_engine":
-                        "unknown",
-                },
-            )
+            skill_status = {}
 
 
         skills_ready = bool(
@@ -874,15 +979,29 @@ def readiness_check():
         )
 
 
+        # ----------------------------------------------------
+        # Overall readiness
+        # ----------------------------------------------------
+
+        application_ready = (
+            parser_ready
+            and
+            skills_ready
+        )
+
+
         return {
 
             "status":
                 "ready"
-                if skills_ready
+                if application_ready
                 else "degraded",
 
             "prediction_engine":
                 "loaded",
+
+            "resume_parser":
+                current_parser_status,
 
             "skill_engine":
                 skill_status.get(
@@ -913,6 +1032,9 @@ def readiness_check():
 
                 "prediction_engine":
                     "unknown",
+
+                "resume_parser":
+                    "error",
 
                 "skill_engine":
                     "error",
