@@ -21,6 +21,14 @@ Memory strategy:
 - Lazily import ranking_engine
 - Release temporary objects after processing
 - Avoid unnecessary model initialization
+
+IMPORTANT DEBUGGING CHANGE:
+
+If prediction-engine initialization fails, the complete
+exception type and traceback are printed to the Render log.
+
+This allows the actual cause of a failed /analyze request
+to be identified instead of returning only a generic 500.
 """
 
 # ============================================================
@@ -28,8 +36,8 @@ Memory strategy:
 # ============================================================
 
 import gc
-import traceback
 import threading
+import traceback
 
 
 # ============================================================
@@ -68,6 +76,7 @@ from config import (
 # RESUME PARSER
 #
 # IMPORTANT:
+#
 # resume_parser.py must NOT load a large ML model.
 # ============================================================
 
@@ -132,8 +141,13 @@ _prediction_engine = None
 
 # Prevent two simultaneous requests from loading the
 # prediction engine twice.
+
 _prediction_engine_lock = threading.Lock()
 
+
+# ============================================================
+# GET PREDICTION ENGINE
+# ============================================================
 
 def get_prediction_engine():
     """
@@ -150,6 +164,11 @@ def get_prediction_engine():
 
     Returns:
         PredictionEngine instance
+
+    Raises:
+        Exception:
+            Original prediction-engine initialization
+            exception, including its traceback in Render logs.
     """
 
     global _prediction_engine
@@ -159,7 +178,6 @@ def get_prediction_engine():
     # --------------------------------------------------------
 
     if _prediction_engine is not None:
-
         return _prediction_engine
 
     # --------------------------------------------------------
@@ -172,7 +190,6 @@ def get_prediction_engine():
         # request was waiting for the lock.
 
         if _prediction_engine is not None:
-
             return _prediction_engine
 
         print(
@@ -204,26 +221,40 @@ def get_prediction_engine():
 
             # ------------------------------------------------
             # Verify engine state when supported
+            #
+            # NOTE:
+            #
+            # The PredictionEngine.__init__() itself should
+            # remain lightweight. We therefore do NOT require
+            # is_loaded() to be True here.
+            #
+            # The model is intentionally loaded lazily when
+            # embed(), semantic_job_search(), hybrid_job_search()
+            # or interview_questions() is called.
             # ------------------------------------------------
 
-            if hasattr(
-                _prediction_engine,
-                "is_loaded",
-            ):
+            if _prediction_engine is None:
 
-                if not _prediction_engine.is_loaded():
-
-                    raise RuntimeError(
-                        "Prediction engine failed to initialize."
-                    )
+                raise RuntimeError(
+                    "predict.py returned a null prediction engine."
+                )
 
             print(
-                "TalentMatch AI prediction engine loaded."
+                "TalentMatch AI prediction engine object "
+                "created successfully."
+            )
+
+            print(
+                "Prediction model remains lazy-loaded."
             )
 
             gc.collect()
 
             return _prediction_engine
+
+        # ----------------------------------------------------
+        # MEMORY ERROR
+        # ----------------------------------------------------
 
         except MemoryError:
 
@@ -232,20 +263,67 @@ def get_prediction_engine():
             gc.collect()
 
             print(
-                "Prediction engine could not be loaded "
+                "=================================================="
+            )
+
+            print(
+                "PREDICTION ENGINE MEMORY ERROR"
+            )
+
+            print(
+                "The prediction engine could not be initialized "
                 "because the server ran out of memory."
+            )
+
+            print(
+                "=================================================="
             )
 
             raise
 
-        except Exception:
+        # ----------------------------------------------------
+        # IMPORTANT:
+        #
+        # DO NOT hide this exception.
+        #
+        # The complete traceback is required to diagnose
+        # deployment problems on Render.
+        # ----------------------------------------------------
+
+        except Exception as exc:
 
             _prediction_engine = None
 
             gc.collect()
 
             print(
-                "Prediction engine initialization failed."
+                "=================================================="
+            )
+
+            print(
+                "PREDICTION ENGINE INITIALIZATION ERROR"
+            )
+
+            print(
+                "Exception type:",
+                type(exc).__name__,
+            )
+
+            print(
+                "Exception:",
+                repr(exc),
+            )
+
+            print(
+                "Full traceback:"
+            )
+
+            print(
+                traceback.format_exc()
+            )
+
+            print(
+                "=================================================="
             )
 
             raise
@@ -271,7 +349,6 @@ def prediction_engine_status():
     engine = _prediction_engine
 
     if engine is None:
-
         return "not_loaded"
 
     try:
@@ -287,7 +364,7 @@ def prediction_engine_status():
 
             return (
                 "loaded"
-                if engine.is_loaded()
+                if bool(engine.is_loaded())
                 else "not_loaded"
             )
 
@@ -300,6 +377,17 @@ def prediction_engine_status():
             "_loaded",
             False,
         )
+
+        # Some older implementations may use
+        # _model_loaded instead.
+
+        if not loaded_state:
+
+            loaded_state = getattr(
+                engine,
+                "_model_loaded",
+                False,
+            )
 
         return (
             "loaded"
@@ -326,14 +414,12 @@ def readable_error(error):
     """
 
     if error is None:
-
         return "An unknown error occurred."
 
     if isinstance(
         error,
         str,
     ):
-
         return error
 
     if isinstance(
@@ -348,9 +434,7 @@ def readable_error(error):
             "msg",
         ):
 
-            value = error.get(
-                key
-            )
+            value = error.get(key)
 
             if value:
 
@@ -358,7 +442,6 @@ def readable_error(error):
                     value,
                     str,
                 ):
-
                     return value
 
                 return str(value)
@@ -388,18 +471,10 @@ def error_response(
 ):
 
     return JSONResponse(
-
         status_code=status_code,
-
         content={
-
-            "success":
-                False,
-
-            "error":
-                readable_error(
-                    message
-                ),
+            "success": False,
+            "error": readable_error(message),
         },
     )
 
@@ -422,21 +497,11 @@ def health_check():
     """
 
     return {
-
-        "status":
-            "healthy",
-
-        "service":
-            "TalentMatch AI",
-
-        "version":
-            "1.0.0",
-
-        "memory_strategy":
-            "lazy_model_loading",
-
-        "prediction_engine":
-            prediction_engine_status(),
+        "status": "healthy",
+        "service": "TalentMatch AI",
+        "version": "1.0.0",
+        "memory_strategy": "lazy_model_loading",
+        "prediction_engine": prediction_engine_status(),
     }
 
 
@@ -453,12 +518,9 @@ async def home(
 ):
 
     return templates.TemplateResponse(
-
         "index.html",
-
         {
-            "request":
-                request,
+            "request": request,
         },
     )
 
@@ -474,70 +536,43 @@ async def home(
 def api_info():
 
     return {
-
-        "name":
-            "TalentMatch AI",
-
-        "version":
-            "1.0.0",
-
-        "status":
-            "online",
+        "name": "TalentMatch AI",
+        "version": "1.0.0",
+        "status": "online",
 
         "features": [
-
             "Resume parsing",
-
             "PDF parsing with pypdf",
-
             "DOCX parsing with python-docx",
-
             "TXT parsing",
-
             "Semantic job matching",
-
             "TF-IDF keyword matching",
-
             "Hybrid job ranking",
-
             "Resume skill extraction",
-
             "Skill frequency analysis",
-
             "Interview question retrieval",
         ],
 
         "supported_resume_formats": [
-
             "PDF",
-
             "DOCX",
-
             "TXT",
         ],
 
-        "pdf_engine":
-            "pypdf",
+        "pdf_engine": "pypdf",
 
-        "pymupdf_required":
-            False,
+        "docx_engine": "python-docx",
+
+        "pymupdf_required": False,
 
         "prediction_engine":
             prediction_engine_status(),
 
         "deployment": {
-
-            "platform":
-                "Render",
-
-            "mode":
-                "CPU inference",
-
-            "memory_target":
-                "512 MB",
-
-            "model_loading":
-                "lazy",
+            "platform": "Render",
+            "mode": "CPU inference",
+            "memory_target": "512 MB",
+            "model_loading": "lazy",
         },
     }
 
@@ -559,12 +594,8 @@ def parser_status_endpoint():
         if status is None:
 
             return {
-
-                "status":
-                    "unknown",
-
-                "message":
-                    "Parser returned no status.",
+                "status": "unknown",
+                "message": "Parser returned no status.",
             }
 
         return status
@@ -576,10 +607,12 @@ def parser_status_endpoint():
             repr(exc),
         )
 
+        print(
+            traceback.format_exc()
+        )
+
         return error_response(
-
             str(exc),
-
             status_code=500,
         )
 
@@ -601,12 +634,8 @@ def skills_status():
         if status is None:
 
             return {
-
-                "status":
-                    "unknown",
-
-                "message":
-                    "Skill engine returned no status.",
+                "status": "unknown",
+                "message": "Skill engine returned no status.",
             }
 
         return status
@@ -618,10 +647,12 @@ def skills_status():
             repr(exc),
         )
 
+        print(
+            traceback.format_exc()
+        )
+
         return error_response(
-
             str(exc),
-
             status_code=500,
         )
 
@@ -645,19 +676,15 @@ def readiness_check():
         current_parser_status = parser_status()
 
         parser_ready = (
-
             isinstance(
                 current_parser_status,
                 dict,
             )
-
             and
-
             current_parser_status.get(
                 "status"
             ) == "ready"
         )
-
 
         # ====================================================
         # SKILL ENGINE STATUS
@@ -674,15 +701,31 @@ def readiness_check():
 
             current_skill_status = {}
 
+        # ----------------------------------------------------
+        # Some versions of skill_engine_status() may expose
+        # skills_file_exists.
+        #
+        # If not present, consider the status itself.
+        # ----------------------------------------------------
 
-        skills_ready = bool(
-
+        skills_file_exists = bool(
             current_skill_status.get(
                 "skills_file_exists",
                 False,
             )
         )
 
+        skills_status_value = (
+            current_skill_status.get(
+                "status"
+            )
+        )
+
+        skills_ready = (
+            skills_file_exists
+            or
+            skills_status_value == "ready"
+        )
 
         # ====================================================
         # PREDICTION ENGINE STATUS
@@ -694,49 +737,9 @@ def readiness_check():
         # /ready must remain lightweight.
         # ====================================================
 
-        engine = _prediction_engine
-
         prediction_status = (
-            "not_loaded"
+            prediction_engine_status()
         )
-
-        if engine is not None:
-
-            try:
-
-                prediction_status = (
-
-                    "loaded"
-
-                    if engine.is_loaded()
-
-                    else "not_loaded"
-                )
-
-            except AttributeError:
-
-                # Compatibility with an older predict.py
-                # that does not yet contain is_loaded().
-
-                prediction_status = (
-
-                    "loaded"
-
-                    if getattr(
-                        engine,
-                        "_loaded",
-                        False,
-                    )
-
-                    else "not_loaded"
-                )
-
-            except Exception:
-
-                prediction_status = (
-                    "unavailable"
-                )
-
 
         # ====================================================
         # APPLICATION READINESS
@@ -744,18 +747,14 @@ def readiness_check():
         # The AI engine does NOT need to be loaded for the
         # application itself to be ready.
         #
-        # It will load when /analyze is called.
+        # It loads when /analyze is called.
         # ====================================================
 
         application_ready = (
-
             parser_ready
-
             and
-
             skills_ready
         )
-
 
         # ====================================================
         # RESPONSE
@@ -764,29 +763,12 @@ def readiness_check():
         return {
 
             "status":
-
                 "ready"
-
                 if application_ready
-
                 else "degraded",
 
-            # ------------------------------------------------
-            # REQUIRED FIX
-            # ------------------------------------------------
-
             "prediction_engine":
-
-                "loaded"
-
-                if engine is not None
-                and engine.is_loaded()
-
-                else "not_loaded",
-
-            # ------------------------------------------------
-            # Additional explicit status
-            # ------------------------------------------------
+                prediction_status,
 
             "prediction_engine_status":
                 prediction_status,
@@ -801,9 +783,8 @@ def readiness_check():
                 current_skill_status,
 
             "skills_file_exists":
-                skills_ready,
+                skills_file_exists,
         }
-
 
     except Exception as exc:
 
@@ -812,14 +793,16 @@ def readiness_check():
             repr(exc),
         )
 
+        print(
+            traceback.format_exc()
+        )
+
         return JSONResponse(
 
             status_code=503,
 
             content={
-
-                "status":
-                    "not_ready",
+                "status": "not_ready",
 
                 "prediction_engine":
                     prediction_engine_status(),
@@ -831,9 +814,7 @@ def readiness_check():
                     "error",
 
                 "error":
-                    readable_error(
-                        exc
-                    ),
+                    readable_error(exc),
             },
         )
 
@@ -870,12 +851,9 @@ async def analyze_resume(
         if not file.filename:
 
             return error_response(
-
                 "Please upload a resume.",
-
                 status_code=400,
             )
-
 
         # ====================================================
         # VALIDATE EXTENSION
@@ -884,11 +862,8 @@ async def analyze_resume(
         filename = file.filename.lower()
 
         supported_extensions = (
-
             ".pdf",
-
             ".docx",
-
             ".txt",
         )
 
@@ -897,15 +872,12 @@ async def analyze_resume(
         ):
 
             return error_response(
-
                 (
                     "Unsupported resume format. "
                     "Please upload a PDF, DOCX or TXT file."
                 ),
-
                 status_code=400,
             )
-
 
         # ====================================================
         # READ FILE WITH MEMORY LIMIT
@@ -931,7 +903,6 @@ async def analyze_resume(
             )
 
             if not chunk:
-
                 break
 
             total_size += len(chunk)
@@ -939,19 +910,14 @@ async def analyze_resume(
             if total_size > MAX_UPLOAD_SIZE:
 
                 return error_response(
-
                     (
                         "Resume exceeds the maximum "
                         "allowed file size."
                     ),
-
                     status_code=400,
                 )
 
-            chunks.append(
-                chunk
-            )
-
+            chunks.append(chunk)
 
         # ====================================================
         # EMPTY FILE
@@ -960,12 +926,9 @@ async def analyze_resume(
         if total_size <= 0:
 
             return error_response(
-
                 "The uploaded resume is empty.",
-
                 status_code=400,
             )
-
 
         # ====================================================
         # COMBINE CHUNKS
@@ -977,18 +940,14 @@ async def analyze_resume(
 
         del chunks
 
-
         # ====================================================
         # PARSE RESUME
         # ====================================================
 
         resume_text = parse_resume(
-
             file_bytes=file_bytes,
-
             filename=file.filename,
         )
-
 
         # ====================================================
         # RELEASE RAW FILE
@@ -998,7 +957,6 @@ async def analyze_resume(
 
         gc.collect()
 
-
         # ====================================================
         # VERIFY EXTRACTED TEXT
         # ====================================================
@@ -1006,33 +964,24 @@ async def analyze_resume(
         if not resume_text:
 
             return error_response(
-
                 (
                     "No readable text could be extracted "
                     "from the uploaded resume."
                 ),
-
                 status_code=400,
             )
 
-
         # ====================================================
         # LIMIT RESUME TEXT
-        #
-        # Prevents huge documents from consuming excessive
-        # memory during embedding and TF-IDF processing.
         # ====================================================
 
         MAX_RESUME_TEXT_CHARS = 100000
 
-        if len(
-            resume_text
-        ) > MAX_RESUME_TEXT_CHARS:
+        if len(resume_text) > MAX_RESUME_TEXT_CHARS:
 
             resume_text = resume_text[
                 :MAX_RESUME_TEXT_CHARS
             ]
-
 
         # ====================================================
         # EXTRACT SKILLS
@@ -1040,33 +989,25 @@ async def analyze_resume(
 
         skill_details = (
             extract_skill_details(
-
                 resume_text,
-
                 max_skills=100,
             )
         )
 
-
         if skill_details is None:
-
             skill_details = []
-
 
         if not isinstance(
             skill_details,
             list,
         ):
-
             skill_details = []
-
 
         # ====================================================
         # BUILD DETECTED SKILLS
         # ====================================================
 
         detected_skills = []
-
 
         for item in skill_details:
 
@@ -1094,18 +1035,15 @@ async def analyze_resume(
                     item
                 )
 
-
         # ====================================================
         # REMOVE DUPLICATES
         # ====================================================
 
         detected_skills = list(
-
             dict.fromkeys(
                 detected_skills
             )
         )
-
 
         # ====================================================
         # LOAD AI ENGINE LAZILY
@@ -1114,29 +1052,40 @@ async def analyze_resume(
         # should be loaded.
         # ====================================================
 
+        print(
+            "=================================================="
+        )
+
+        print(
+            "Resume successfully parsed."
+        )
+
+        print(
+            "Requesting lazy prediction engine..."
+        )
+
+        print(
+            "=================================================="
+        )
+
         prediction_engine = (
             get_prediction_engine()
         )
-
 
         # ====================================================
         # LAZY IMPORT RANKING ENGINE
         # ====================================================
 
         from ranking_engine import (
-
             analyze_jobs,
-
             format_interview_questions,
         )
-
 
         # ====================================================
         # JOB ANALYSIS
         # ====================================================
 
         analysis = analyze_jobs(
-
             prediction_engine=
                 prediction_engine,
 
@@ -1146,7 +1095,6 @@ async def analyze_resume(
             top_k=
                 MAX_RETURNED_JOBS,
         )
-
 
         # ====================================================
         # VALIDATE RANKING RESPONSE
@@ -1158,11 +1106,9 @@ async def analyze_resume(
         ):
 
             raise RuntimeError(
-
                 "The job ranking engine returned "
                 "an invalid response."
             )
-
 
         jobs = analysis.get(
             "jobs",
@@ -1174,32 +1120,23 @@ async def analyze_resume(
             {},
         )
 
-
         if jobs is None:
-
             jobs = []
-
 
         if not isinstance(
             jobs,
             list,
         ):
-
             jobs = []
 
-
         if summary is None:
-
             summary = {}
-
 
         if not isinstance(
             summary,
             dict,
         ):
-
             summary = {}
-
 
         # ====================================================
         # INTERVIEW QUESTIONS
@@ -1207,7 +1144,6 @@ async def analyze_resume(
 
         questions = (
             prediction_engine.interview_questions(
-
                 resume_text=
                     resume_text,
 
@@ -1216,40 +1152,29 @@ async def analyze_resume(
             )
         )
 
-
         if questions is None:
-
             questions = []
-
 
         # ====================================================
         # FORMAT QUESTIONS
         # ====================================================
 
         interview_results = (
-
             format_interview_questions(
-
                 questions,
-
                 top_k=
                     MAX_RETURNED_INTERVIEWS,
             )
         )
 
-
         if interview_results is None:
-
             interview_results = []
-
 
         if not isinstance(
             interview_results,
             list,
         ):
-
             interview_results = []
-
 
         # ====================================================
         # SKILL SUMMARY
@@ -1258,9 +1183,7 @@ async def analyze_resume(
         skill_summary = {
 
             "total_detected":
-                len(
-                    detected_skills
-                ),
+                len(detected_skills),
 
             "skills":
                 detected_skills,
@@ -1268,7 +1191,6 @@ async def analyze_resume(
             "details":
                 skill_details,
         }
-
 
         # ====================================================
         # FINAL RESPONSE
@@ -1292,18 +1214,14 @@ async def analyze_resume(
                 interview_results,
         }
 
-
         # ====================================================
         # RETURN
         # ====================================================
 
         return JSONResponse(
-
             status_code=200,
-
             content=response,
         )
-
 
     # ========================================================
     # RESUME PARSING ERROR
@@ -1312,17 +1230,30 @@ async def analyze_resume(
     except ResumeParsingError as exc:
 
         print(
-            "Resume parsing error:",
+            "=================================================="
+        )
+
+        print(
+            "RESUME PARSING ERROR"
+        )
+
+        print(
+            "Exception:",
             repr(exc),
         )
 
-        return error_response(
-
-            str(exc),
-
-            status_code=400,
+        print(
+            traceback.format_exc()
         )
 
+        print(
+            "=================================================="
+        )
+
+        return error_response(
+            str(exc),
+            status_code=400,
+        )
 
     # ========================================================
     # HTTP ERROR
@@ -1330,13 +1261,15 @@ async def analyze_resume(
 
     except HTTPException as exc:
 
-        return error_response(
-
-            exc.detail,
-
-            status_code=exc.status_code,
+        print(
+            "HTTP error:",
+            repr(exc),
         )
 
+        return error_response(
+            exc.detail,
+            status_code=exc.status_code,
+        )
 
     # ========================================================
     # MEMORY ERROR
@@ -1361,16 +1294,13 @@ async def analyze_resume(
         )
 
         return error_response(
-
             (
                 "The server ran out of memory while "
                 "processing this resume. Please try "
                 "a smaller resume."
             ),
-
             status_code=503,
         )
-
 
     # ========================================================
     # UNEXPECTED ERROR
@@ -1387,7 +1317,17 @@ async def analyze_resume(
         )
 
         print(
-            repr(exc)
+            "Exception type:",
+            type(exc).__name__,
+        )
+
+        print(
+            "Exception:",
+            repr(exc),
+        )
+
+        print(
+            "Full traceback:"
         )
 
         print(
@@ -1399,16 +1339,13 @@ async def analyze_resume(
         )
 
         return error_response(
-
             (
                 "Unable to analyze the resume. "
                 "The server encountered an internal error. "
                 "Please try again."
             ),
-
             status_code=500,
         )
-
 
     # ========================================================
     # CLEANUP
@@ -1447,3 +1384,7 @@ def shutdown_event():
     _prediction_engine = None
 
     gc.collect()
+
+    print(
+        "TalentMatch AI application shutdown complete."
+    )
