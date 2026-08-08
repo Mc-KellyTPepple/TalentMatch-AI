@@ -1,11 +1,10 @@
 /*
 ===============================================================
 TalentMatch AI
-
 Frontend Application
+===============================================================
 
 Responsibilities:
-
 • Resume upload
 • File validation
 • API communication
@@ -13,17 +12,16 @@ Responsibilities:
 • Display AI job matches
 • Display candidate summary
 • Display interview recommendations
+• Safe rendering of backend objects
 • Error handling
 
 Designed for:
 Render Free
 512 MB RAM
-
 ===============================================================
 */
 
 "use strict";
-
 
 // =============================================================
 // Configuration
@@ -38,7 +36,6 @@ const SUPPORTED_EXTENSIONS = [
     ".docx",
     ".txt"
 ];
-
 
 // =============================================================
 // DOM Elements
@@ -109,20 +106,173 @@ const averageMatchScore =
 
 
 // =============================================================
-// Utility Functions
+// Safe Value Conversion
+// =============================================================
+
+/*
+    IMPORTANT FIX
+
+    Backend data can sometimes contain:
+
+        string
+        number
+        array
+        object
+        null
+
+    Calling String(object) produces:
+
+        [object Object]
+
+    These functions convert backend values into
+    human-readable text before displaying them.
+*/
+
+function valueToText(value) {
+
+    if (
+        value === null ||
+        value === undefined
+    ) {
+        return "";
+    }
+
+    if (typeof value === "string") {
+        return value;
+    }
+
+    if (
+        typeof value === "number" ||
+        typeof value === "boolean"
+    ) {
+        return String(value);
+    }
+
+    if (Array.isArray(value)) {
+
+        return value
+            .map(item => valueToText(item))
+            .filter(Boolean)
+            .join(", ");
+    }
+
+    if (typeof value === "object") {
+
+        /*
+            Convert an object into readable text.
+
+            Example:
+
+            {
+                "skill": "Python",
+                "frequency": 120
+            }
+
+            becomes:
+
+            "skill: Python; frequency: 120"
+        */
+
+        return Object.entries(value)
+            .map(([key, item]) => {
+
+                const text =
+                    valueToText(item);
+
+                if (!text) {
+                    return "";
+                }
+
+                return `${key}: ${text}`;
+
+            })
+            .filter(Boolean)
+            .join("; ");
+    }
+
+    return String(value);
+}
+
+
+// =============================================================
+// HTML Escaping
 // =============================================================
 
 function escapeHTML(value) {
 
-    if (value === null || value === undefined) {
-        return "";
-    }
+    const text =
+        valueToText(value);
 
-    const div = document.createElement("div");
+    const div =
+        document.createElement("div");
 
-    div.textContent = String(value);
+    div.textContent = text;
 
     return div.innerHTML;
+}
+
+
+// =============================================================
+// Array Normalization
+// =============================================================
+
+function normalizeArray(value) {
+
+    if (Array.isArray(value)) {
+        return value;
+    }
+
+    if (
+        value === null ||
+        value === undefined
+    ) {
+        return [];
+    }
+
+    return [value];
+}
+
+
+// =============================================================
+// Score Normalization
+// =============================================================
+
+function normalizeScore(value) {
+
+    let score =
+        Number(value);
+
+    if (!Number.isFinite(score)) {
+        return 0;
+    }
+
+    /*
+        Backend scores may be:
+
+        0.87
+        87
+        "87"
+    */
+
+    if (
+        score > 0 &&
+        score <= 1
+    ) {
+        score *= 100;
+    }
+
+    score =
+        Math.max(
+            0,
+            Math.min(
+                100,
+                score
+            )
+        );
+
+    return Number(
+        score.toFixed(2)
+    );
 }
 
 
@@ -140,7 +290,10 @@ function formatFileSize(bytes) {
         return `${(bytes / 1024).toFixed(1)} KB`;
     }
 
-    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+    return `${(
+        bytes /
+        (1024 * 1024)
+    ).toFixed(2)} MB`;
 }
 
 
@@ -156,7 +309,6 @@ function validateFile(file) {
             valid: false,
             message: "Please select a resume."
         };
-
     }
 
     const extension =
@@ -178,7 +330,6 @@ function validateFile(file) {
                 "Unsupported file format. " +
                 "Please upload a PDF, DOCX or TXT resume."
         };
-
     }
 
     if (file.size <= 0) {
@@ -188,7 +339,6 @@ function validateFile(file) {
             message:
                 "The selected file is empty."
         };
-
     }
 
     if (
@@ -201,7 +351,6 @@ function validateFile(file) {
             message:
                 "The resume is larger than the 10 MB limit."
         };
-
     }
 
     return {
@@ -217,29 +366,35 @@ function validateFile(file) {
 
 function showError(message) {
 
+    if (!errorMessage) {
+        return;
+    }
+
     errorMessage.textContent =
-        message;
+        valueToText(message);
 
     errorMessage.classList.remove(
         "hidden"
     );
-
 }
 
 
 function hideError() {
+
+    if (!errorMessage) {
+        return;
+    }
 
     errorMessage.textContent = "";
 
     errorMessage.classList.add(
         "hidden"
     );
-
 }
 
 
 // =============================================================
-// Selected File Display
+// Selected File
 // =============================================================
 
 function displaySelectedFile(file) {
@@ -248,12 +403,13 @@ function displaySelectedFile(file) {
         file.name;
 
     fileSize.textContent =
-        formatFileSize(file.size);
+        formatFileSize(
+            file.size
+        );
 
     selectedFile.classList.remove(
         "hidden"
     );
-
 }
 
 
@@ -268,7 +424,6 @@ function clearSelectedFile() {
     fileName.textContent = "";
 
     fileSize.textContent = "";
-
 }
 
 
@@ -304,13 +459,12 @@ resumeInput.addEventListener(
         }
 
         displaySelectedFile(file);
-
     }
 );
 
 
 // =============================================================
-// Remove Selected File
+// Remove File
 // =============================================================
 
 removeFile.addEventListener(
@@ -322,7 +476,6 @@ removeFile.addEventListener(
         clearSelectedFile();
 
         hideError();
-
     }
 );
 
@@ -340,7 +493,6 @@ uploadArea.addEventListener(
         uploadArea.classList.add(
             "dragging"
         );
-
     }
 );
 
@@ -352,7 +504,6 @@ uploadArea.addEventListener(
         uploadArea.classList.remove(
             "dragging"
         );
-
     }
 );
 
@@ -372,11 +523,15 @@ uploadArea.addEventListener(
         const files =
             event.dataTransfer.files;
 
-        if (!files || !files.length) {
+        if (
+            !files ||
+            !files.length
+        ) {
             return;
         }
 
-        const file = files[0];
+        const file =
+            files[0];
 
         const validation =
             validateFile(file);
@@ -389,12 +544,6 @@ uploadArea.addEventListener(
 
             return;
         }
-
-        /*
-        DataTransfer is used so that the
-        selected file is also available
-        to the form submission.
-        */
 
         try {
 
@@ -414,11 +563,9 @@ uploadArea.addEventListener(
                 "Unable to assign dropped file.",
                 error
             );
-
         }
 
         displaySelectedFile(file);
-
     }
 );
 
@@ -427,7 +574,9 @@ uploadArea.addEventListener(
 // Loading State
 // =============================================================
 
-function setLoadingState(isLoading) {
+function setLoadingState(
+    isLoading
+) {
 
     if (isLoading) {
 
@@ -460,9 +609,7 @@ function setLoadingState(isLoading) {
         loadingSection.classList.add(
             "hidden"
         );
-
     }
-
 }
 
 
@@ -495,7 +642,6 @@ function resetResults() {
     resultsSection.classList.add(
         "hidden"
     );
-
 }
 
 
@@ -536,10 +682,27 @@ resumeForm.addEventListener(
                 new FormData();
 
             formData.append(
-                "resume",
+                "file",
                 file
             );
 
+            /*
+                IMPORTANT:
+
+                Your FastAPI code currently uses:
+
+                    file: UploadFile = File(...)
+
+                Therefore the multipart field MUST be:
+
+                    "file"
+
+                not:
+
+                    "resume"
+
+                This was another compatibility issue.
+            */
 
             const response =
                 await fetch(
@@ -549,13 +712,6 @@ resumeForm.addEventListener(
                         body: formData
                     }
                 );
-
-
-            /*
-            Attempt to parse JSON regardless
-            of HTTP status so the backend can
-            return a useful error message.
-            */
 
             let data;
 
@@ -569,9 +725,7 @@ resumeForm.addEventListener(
                 throw new Error(
                     "The server returned an invalid response."
                 );
-
             }
-
 
             if (!response.ok) {
 
@@ -582,11 +736,21 @@ resumeForm.addEventListener(
                     "Resume analysis failed.";
 
                 throw new Error(
-                    message
+                    valueToText(message)
                 );
-
             }
 
+            if (
+                data.success === false
+            ) {
+
+                throw new Error(
+                    valueToText(
+                        data.error ||
+                        "Resume analysis failed."
+                    )
+                );
+            }
 
             displayResults(data);
 
@@ -605,9 +769,7 @@ resumeForm.addEventListener(
         } finally {
 
             setLoadingState(false);
-
         }
-
     }
 );
 
@@ -627,66 +789,70 @@ function displayResults(data) {
         return;
     }
 
-
-    /*
-    Expected backend structure:
-
-    {
-        summary: {
-            jobs_analyzed: 10,
-            best_match_score: 87,
-            best_match_level: "Excellent Match",
-            average_match_score: 74
-        },
-
-        jobs: [...],
-
-        interviews: [...]
-    }
-    */
+    console.log(
+        "TalentMatch AI response:",
+        data
+    );
 
     const summary =
         data.summary || {};
 
+    const jobs =
+        normalizeArray(
+            data.jobs
+        );
+
+    const interviews =
+        normalizeArray(
+            data.interviews ||
+            data.interview_questions
+        );
 
     jobsAnalyzed.textContent =
-        summary.jobs_analyzed ?? 0;
+        summary.jobs_analyzed ??
+        jobs.length ??
+        0;
 
+    const best =
+        normalizeScore(
+            summary.best_match_score ??
+            summary.best_score ??
+            (
+                jobs.length
+                    ? jobs[0].match_score ??
+                      jobs[0].score
+                    : 0
+            )
+        );
 
     bestMatchScore.textContent =
-        `${summary.best_match_score ?? 0}%`;
-
+        `${best}%`;
 
     bestMatchLevel.textContent =
-        summary.best_match_level ||
-        "No Match";
+        valueToText(
+            summary.best_match_level ||
+            getClientMatchLevel(best)
+        );
 
+    const average =
+        normalizeScore(
+            summary.average_match_score ??
+            summary.average_score ??
+            calculateAverageScore(jobs)
+        );
 
     averageMatchScore.textContent =
-        `${summary.average_match_score ?? 0}%`;
+        `${average}%`;
 
-
-    renderJobs(
-        data.jobs || []
-    );
-
+    renderJobs(jobs);
 
     renderInterviews(
-        data.interviews ||
-        data.interview_questions ||
-        []
+        interviews
     );
-
 
     resultsSection.classList.remove(
         "hidden"
     );
-
-
-    /*
-    Move the user to the results
-    without forcing an aggressive jump.
-    */
 
     setTimeout(
         function () {
@@ -699,12 +865,49 @@ function displayResults(data) {
         },
         100
     );
-
 }
 
 
 // =============================================================
-// Render Job Matches
+// Calculate Average Score
+// =============================================================
+
+function calculateAverageScore(
+    jobs
+) {
+
+    if (!jobs.length) {
+        return 0;
+    }
+
+    const scores =
+        jobs.map(
+            job =>
+                normalizeScore(
+                    job.match_score ??
+                    job.score ??
+                    0
+                )
+        );
+
+    const total =
+        scores.reduce(
+            (sum, score) =>
+                sum + score,
+            0
+        );
+
+    return Number(
+        (
+            total /
+            scores.length
+        ).toFixed(2)
+    );
+}
+
+
+// =============================================================
+// Render Jobs
 // =============================================================
 
 function renderJobs(jobs) {
@@ -726,7 +929,6 @@ function renderJobs(jobs) {
         return;
     }
 
-
     jobs.forEach(
         function (job, index) {
 
@@ -739,10 +941,8 @@ function renderJobs(jobs) {
             jobsContainer.appendChild(
                 card
             );
-
         }
     );
-
 }
 
 
@@ -763,36 +963,48 @@ function createJobCard(
     card.className =
         "job-card";
 
+    /*
+        Support both the ranking_engine
+        naming and prediction_engine naming.
+    */
 
     const score =
-        Number(
-            job.match_score ?? 0
+        normalizeScore(
+            job.match_score ??
+            job.score ??
+            0
         );
-
 
     const semantic =
-        Number(
-            job.semantic_score ?? 0
+        normalizeScore(
+            job.semantic_score ??
+            job.semantic_match ??
+            0
         );
 
+    /*
+        ranking_engine may call this keyword_score,
+        while predict.py calls it tfidf_score.
+    */
 
     const keyword =
-        Number(
-            job.keyword_score ?? 0
+        normalizeScore(
+            job.keyword_score ??
+            job.tfidf_score ??
+            job.lexical_score ??
+            0
         );
-
 
     const rank =
         job.rank ||
         index + 1;
 
-
     const category =
         escapeHTML(
             job.category ||
+            job.title ||
             "Job Opportunity"
         );
-
 
     const description =
         escapeHTML(
@@ -800,13 +1012,11 @@ function createJobCard(
             "No job description available."
         );
 
-
     const requirements =
         escapeHTML(
             job.requirements ||
             "No requirements provided."
         );
-
 
     const benefits =
         escapeHTML(
@@ -814,21 +1024,28 @@ function createJobCard(
             ""
         );
 
-
     const matchLevel =
         escapeHTML(
             job.match_level ||
             getClientMatchLevel(score)
         );
 
+    /*
+        Safely handle strengths.
+
+        This prevents:
+
+            [object Object]
+
+        from appearing in the UI.
+    */
 
     const strengths =
-        Array.isArray(
-            job.strengths
-        )
-            ? job.strengths
-            : [];
-
+        normalizeArray(
+            job.strengths ||
+            job.matching_skills ||
+            []
+        );
 
     const strengthsHTML =
         strengths.length
@@ -847,10 +1064,11 @@ function createJobCard(
 
                                     return `
                                         <li>
-                                            ${escapeHTML(strength)}
+                                            ${escapeHTML(
+                                                strength
+                                            )}
                                         </li>
                                     `;
-
                                 }
                             )
                             .join("")
@@ -862,13 +1080,79 @@ function createJobCard(
             `
             : "";
 
+    /*
+        Also support missing/matched skills
+        if ranking_engine returns them.
+    */
+
+    const matchedSkills =
+        normalizeArray(
+            job.matched_skills ||
+            job.matched ||
+            []
+        );
+
+    const missingSkills =
+        normalizeArray(
+            job.missing_skills ||
+            job.missing ||
+            []
+        );
+
+    const skillsHTML =
+        (
+            matchedSkills.length ||
+            missingSkills.length
+        )
+            ? `
+                <div class="skill-analysis">
+
+                    ${
+                        matchedSkills.length
+                            ? `
+                                <div class="skill-group">
+                                    <strong>
+                                        Matching Skills
+                                    </strong>
+
+                                    <p>
+                                        ${escapeHTML(
+                                            matchedSkills
+                                        )}
+                                    </p>
+                                </div>
+                            `
+                            : ""
+                    }
+
+                    ${
+                        missingSkills.length
+                            ? `
+                                <div class="skill-group">
+                                    <strong>
+                                        Skills to Develop
+                                    </strong>
+
+                                    <p>
+                                        ${escapeHTML(
+                                            missingSkills
+                                        )}
+                                    </p>
+                                </div>
+                            `
+                            : ""
+                    }
+
+                </div>
+            `
+            : "";
 
     card.innerHTML = `
 
         <div class="job-card-top">
 
             <div class="job-rank">
-                #${rank}
+                #${escapeHTML(rank)}
             </div>
 
             <div class="job-title-area">
@@ -902,13 +1186,7 @@ function createJobCard(
 
             <div
                 class="score-fill"
-                style="width: ${Math.min(
-                    100,
-                    Math.max(
-                        0,
-                        score
-                    )
-                )}%"
+                style="width: ${score}%"
             ></div>
 
         </div>
@@ -927,7 +1205,6 @@ function createJobCard(
                 </strong>
 
             </div>
-
 
             <div class="signal">
 
@@ -990,20 +1267,20 @@ function createJobCard(
                     : ""
             }
 
+
             ${strengthsHTML}
 
-        </div>
+            ${skillsHTML}
 
+        </div>
     `;
 
-
     return card;
-
 }
 
 
 // =============================================================
-// Client-side Match Level
+// Client Match Level
 // =============================================================
 
 function getClientMatchLevel(
@@ -1027,12 +1304,11 @@ function getClientMatchLevel(
     }
 
     return "Low Match";
-
 }
 
 
 // =============================================================
-// Render Interview Questions
+// Render Interviews
 // =============================================================
 
 function renderInterviews(
@@ -1050,11 +1326,9 @@ function renderInterviews(
         return;
     }
 
-
     interviewSection.classList.remove(
         "hidden"
     );
-
 
     questions.forEach(
         function (
@@ -1071,10 +1345,8 @@ function renderInterviews(
             interviewContainer.appendChild(
                 card
             );
-
         }
     );
-
 }
 
 
@@ -1095,34 +1367,31 @@ function createInterviewCard(
     card.className =
         "interview-card";
 
-
     const rank =
         question.rank ||
         index + 1;
 
-
     const relevance =
-        Number(
+        normalizeScore(
             question.relevance_score ??
             question.score ??
             0
         );
 
-
     const questionText =
         escapeHTML(
             question.question ||
+            question.text ||
             ""
         );
-
 
     const answer =
         escapeHTML(
             question.ideal_answer ||
             question.answer ||
+            question.guidance ||
             ""
         );
-
 
     const role =
         escapeHTML(
@@ -1130,13 +1399,11 @@ function createInterviewCard(
             ""
         );
 
-
     const category =
         escapeHTML(
             question.category ||
             ""
         );
-
 
     const difficulty =
         escapeHTML(
@@ -1144,13 +1411,18 @@ function createInterviewCard(
             ""
         );
 
+    const experience =
+        escapeHTML(
+            question.experience ||
+            ""
+        );
 
     card.innerHTML = `
 
         <div class="interview-header">
 
             <div class="interview-number">
-                ${rank}
+                ${escapeHTML(rank)}
             </div>
 
             <div class="interview-meta">
@@ -1180,6 +1452,16 @@ function createInterviewCard(
                         ? `
                             <span>
                                 ${difficulty}
+                            </span>
+                        `
+                        : ""
+                }
+
+                ${
+                    experience
+                        ? `
+                            <span>
+                                ${experience}
                             </span>
                         `
                         : ""
@@ -1227,9 +1509,7 @@ function createInterviewCard(
 
     `;
 
-
     return card;
-
 }
 
 
@@ -1251,14 +1531,12 @@ newAnalysis.addEventListener(
             top: 0,
             behavior: "smooth"
         });
-
     }
 );
 
 
 // =============================================================
-// Prevent accidental browser navigation
-// during drag & drop
+// Prevent Browser Navigation
 // =============================================================
 
 window.addEventListener(
@@ -1266,7 +1544,6 @@ window.addEventListener(
     function (event) {
 
         event.preventDefault();
-
     }
 );
 
@@ -1276,7 +1553,6 @@ window.addEventListener(
     function (event) {
 
         event.preventDefault();
-
     }
 );
 
@@ -1294,6 +1570,5 @@ document.addEventListener(
         console.log(
             "TalentMatch AI frontend initialized."
         );
-
     }
 );
