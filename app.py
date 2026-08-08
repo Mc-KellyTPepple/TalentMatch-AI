@@ -3,9 +3,9 @@ TalentMatch AI
 Production FastAPI Application
 
 Designed for:
-    Render Free
-    512 MB RAM
-    CPU inference
+Render Free
+512 MB RAM
+CPU inference
 
 Architecture:
 
@@ -26,21 +26,21 @@ Architecture:
     JSON / HTML Response
 
 Features:
-    • PDF / DOCX / TXT resume parsing
-    • AI semantic job matching
-    • TF-IDF keyword matching
-    • Hybrid job ranking
-    • Resume skill extraction
-    • Skill frequency information
-    • Interview question retrieval
-    • Employer-friendly candidate summary
+• PDF / DOCX / TXT resume parsing
+• AI semantic job matching
+• TF-IDF keyword matching
+• Hybrid job ranking
+• Resume skill extraction
+• Skill frequency information
+• Interview question retrieval
+• Employer-friendly candidate summary
 
 Memory strategy:
-    • Single prediction engine
-    • CPU inference
-    • No permanent resume storage
-    • Upload size protection
-    • Temporary objects released after processing
+• Single prediction engine
+• CPU inference
+• No permanent resume storage
+• Upload size protection
+• Temporary objects released after processing
 """
 
 # ============================================================
@@ -48,6 +48,7 @@ Memory strategy:
 # ============================================================
 
 import gc
+import traceback
 
 from fastapi import (
     FastAPI,
@@ -63,7 +64,6 @@ from fastapi.responses import (
 )
 
 from fastapi.templating import Jinja2Templates
-
 from fastapi.staticfiles import StaticFiles
 
 
@@ -100,15 +100,11 @@ from skill_extractor import (
 # ============================================================
 
 app = FastAPI(
-
     title="TalentMatch AI",
-
     description=(
-        "AI-powered resume analysis, "
-        "job matching, skill extraction "
-        "and interview preparation platform."
+        "AI-powered resume analysis, job matching, "
+        "skill extraction and interview preparation platform."
     ),
-
     version="1.0.0",
 )
 
@@ -119,9 +115,7 @@ app = FastAPI(
 
 app.mount(
     "/static",
-    StaticFiles(
-        directory="static"
-    ),
+    StaticFiles(directory="static"),
     name="static",
 )
 
@@ -136,18 +130,102 @@ templates = Jinja2Templates(
 
 
 # ============================================================
+# Helper: Convert Errors to Readable Text
+# ============================================================
+
+def readable_error(error):
+    """
+    Convert any exception/object into a clean string.
+
+    This prevents the frontend from displaying:
+
+        [object Object]
+
+    when JavaScript receives a dictionary/object.
+    """
+
+    if error is None:
+        return "An unknown error occurred."
+
+    if isinstance(error, str):
+        return error
+
+    if isinstance(error, dict):
+
+        # Prefer common error fields.
+        for key in (
+            "error",
+            "message",
+            "detail",
+            "msg",
+        ):
+
+            value = error.get(key)
+
+            if value:
+
+                if isinstance(value, str):
+                    return value
+
+                return str(value)
+
+        # Fallback
+        return str(error)
+
+    if isinstance(error, (list, tuple)):
+
+        return "; ".join(
+            str(item)
+            for item in error
+        )
+
+    return str(error)
+
+
+# ============================================================
+# Helper: JSON Error Response
+# ============================================================
+
+def error_response(
+    message,
+    status_code=500,
+):
+    """
+    Return a consistent JSON error response.
+
+    IMPORTANT:
+    'error' is always a string.
+    """
+
+    return JSONResponse(
+
+        status_code=status_code,
+
+        content={
+
+            "success": False,
+
+            "error": readable_error(
+                message
+            ),
+        },
+    )
+
+
+# ============================================================
 # Health Check
 # ============================================================
 
 @app.get(
     "/health",
-    response_class=JSONResponse
+    response_class=JSONResponse,
 )
 def health_check():
     """
     Lightweight Render health check.
 
-    This endpoint intentionally does not perform AI inference.
+    This endpoint intentionally does not perform
+    AI inference.
     """
 
     return {
@@ -166,10 +244,10 @@ def health_check():
 
 @app.get(
     "/",
-    response_class=HTMLResponse
+    response_class=HTMLResponse,
 )
 async def home(
-    request: Request
+    request: Request,
 ):
     """
     Serve the TalentMatch AI web interface.
@@ -180,8 +258,8 @@ async def home(
         "index.html",
 
         {
-            "request": request
-        }
+            "request": request,
+        },
     )
 
 
@@ -190,10 +268,10 @@ async def home(
 # ============================================================
 
 @app.post(
-    "/analyze"
+    "/analyze",
 )
 async def analyze_resume(
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
 ):
     """
     Analyze an uploaded resume.
@@ -214,39 +292,63 @@ async def analyze_resume(
               ↓
         JSON Response
 
-    The uploaded document is processed in memory and
-    is not permanently stored.
+    The uploaded document is processed in memory
+    and is not permanently stored.
     """
-
-    # ========================================================
-    # Validate filename
-    # ========================================================
-
-    if not file.filename:
-
-        raise HTTPException(
-
-            status_code=400,
-
-            detail=(
-                "Please upload a resume."
-            )
-        )
-
-
-    # ========================================================
-    # Read upload
-    # ========================================================
 
     file_bytes = None
 
+    resume_text = None
+    skill_details = None
+    detected_skills = None
+    analysis = None
+    questions = None
+    interview_results = None
+
     try:
 
-        # ----------------------------------------------------
-        # Read file into memory.
-        #
-        # MAX_UPLOAD_SIZE is enforced immediately afterward.
-        # ----------------------------------------------------
+        # ====================================================
+        # Validate Filename
+        # ====================================================
+
+        if not file.filename:
+
+            return error_response(
+                "Please upload a resume.",
+                status_code=400,
+            )
+
+
+        # ====================================================
+        # Validate Extension
+        # ====================================================
+
+        filename = file.filename.lower()
+
+        supported_extensions = (
+            ".pdf",
+            ".docx",
+            ".txt",
+        )
+
+        if not filename.endswith(
+            supported_extensions
+        ):
+
+            return error_response(
+
+                (
+                    "Unsupported resume format. "
+                    "Please upload a PDF, DOCX or TXT file."
+                ),
+
+                status_code=400,
+            )
+
+
+        # ====================================================
+        # Read Uploaded File
+        # ====================================================
 
         file_bytes = await file.read()
 
@@ -254,41 +356,31 @@ async def analyze_resume(
             file_bytes
         )
 
-        # ----------------------------------------------------
-        # Protect Render memory.
-        # ----------------------------------------------------
+
+        # ====================================================
+        # Validate File Size
+        # ====================================================
 
         if file_size <= 0:
 
-            return JSONResponse(
+            return error_response(
+
+                "The uploaded resume is empty.",
 
                 status_code=400,
-
-                content={
-
-                    "success": False,
-
-                    "error":
-                        "The uploaded resume is empty.",
-                }
             )
 
 
         if file_size > MAX_UPLOAD_SIZE:
 
-            return JSONResponse(
+            return error_response(
+
+                (
+                    "Resume exceeds the maximum "
+                    "allowed file size of 10 MB."
+                ),
 
                 status_code=400,
-
-                content={
-
-                    "success": False,
-
-                    "error": (
-                        "Resume exceeds the maximum "
-                        "allowed file size of 10 MB."
-                    ),
-                }
             )
 
 
@@ -304,37 +396,95 @@ async def analyze_resume(
         )
 
 
-        # ----------------------------------------------------
-        # Release raw document bytes immediately.
-        # ----------------------------------------------------
+        if not resume_text:
+
+            return error_response(
+
+                (
+                    "No readable text could be extracted "
+                    "from the uploaded resume."
+                ),
+
+                status_code=400,
+            )
+
+
+        # ====================================================
+        # Release Raw File Immediately
+        # ====================================================
 
         del file_bytes
 
         file_bytes = None
 
+        gc.collect()
+
 
         # ====================================================
-        # Extract Skills
+        # Extract Resume Skills
         # ====================================================
 
         skill_details = extract_skill_details(
 
             resume_text,
 
-            max_skills=100
+            max_skills=100,
         )
 
 
         # ====================================================
-        # Simplified Skill List
+        # Safety Check
         # ====================================================
 
-        detected_skills = [
+        if skill_details is None:
 
-            item["skill"]
+            skill_details = []
 
-            for item in skill_details
-        ]
+
+        if not isinstance(
+            skill_details,
+            list,
+        ):
+
+            skill_details = []
+
+
+        # ====================================================
+        # Build Simplified Skill List
+        # ====================================================
+
+        detected_skills = []
+
+        for item in skill_details:
+
+            if isinstance(item, dict):
+
+                skill = item.get(
+                    "skill"
+                )
+
+                if skill:
+
+                    detected_skills.append(
+                        str(skill)
+                    )
+
+            elif isinstance(item, str):
+
+                detected_skills.append(
+                    item
+                )
+
+
+        # ====================================================
+        # Remove Duplicate Skills
+        # ====================================================
+
+        detected_skills = list(
+            dict.fromkeys(
+                detected_skills
+            )
+        )
 
 
         # ====================================================
@@ -352,6 +502,39 @@ async def analyze_resume(
 
 
         # ====================================================
+        # Validate Analysis
+        # ====================================================
+
+        if not isinstance(
+            analysis,
+            dict,
+        ):
+
+            raise RuntimeError(
+                "The job ranking engine returned an invalid response."
+            )
+
+
+        jobs = analysis.get(
+            "jobs",
+            [],
+        )
+
+        summary = analysis.get(
+            "summary",
+            {},
+        )
+
+
+        if jobs is None:
+            jobs = []
+
+
+        if summary is None:
+            summary = {}
+
+
+        # ====================================================
         # Retrieve Interview Questions
         # ====================================================
 
@@ -361,6 +544,11 @@ async def analyze_resume(
 
             top_k=MAX_RETURNED_INTERVIEWS,
         )
+
+
+        if questions is None:
+
+            questions = []
 
 
         # ====================================================
@@ -377,19 +565,25 @@ async def analyze_resume(
         )
 
 
+        if interview_results is None:
+
+            interview_results = []
+
+
         # ====================================================
         # Candidate Skill Summary
         # ====================================================
 
         skill_summary = {
 
-            "total_detected": len(
-                detected_skills
-            ),
+            "total_detected":
+                len(detected_skills),
 
-            "skills": detected_skills,
+            "skills":
+                detected_skills,
 
-            "details": skill_details,
+            "details":
+                skill_details,
         }
 
 
@@ -401,46 +595,30 @@ async def analyze_resume(
 
             "success": True,
 
-            "summary": analysis[
-                "summary"
-            ],
+            "summary":
+                summary,
 
-            "skills": skill_summary,
+            "skills":
+                skill_summary,
 
-            "jobs": analysis[
-                "jobs"
-            ],
+            "jobs":
+                jobs,
 
             "interview_questions":
                 interview_results,
-
         }
 
 
         # ====================================================
-        # Release Temporary Objects
+        # Return Response
         # ====================================================
 
-        del resume_text
+        return JSONResponse(
 
-        del analysis
+            status_code=200,
 
-        del questions
-
-        del interview_results
-
-        del skill_details
-
-        del detected_skills
-
-        gc.collect()
-
-
-        # ====================================================
-        # Return
-        # ====================================================
-
-        return response
+            content=response,
+        )
 
 
     # ========================================================
@@ -449,16 +627,30 @@ async def analyze_resume(
 
     except ResumeParsingError as exc:
 
-        return JSONResponse(
+        print(
+            "Resume parsing error:",
+            repr(exc),
+        )
+
+        return error_response(
+
+            str(exc),
 
             status_code=400,
+        )
 
-            content={
 
-                "success": False,
+    # ========================================================
+    # HTTP Error
+    # ========================================================
 
-                "error": str(exc),
-            }
+    except HTTPException as exc:
+
+        return error_response(
+
+            exc.detail,
+
+            status_code=exc.status_code,
         )
 
 
@@ -469,37 +661,50 @@ async def analyze_resume(
     except Exception as exc:
 
         print(
-            "TalentMatch AI analysis error:",
+            "=================================================="
+        )
+
+        print(
+            "TalentMatch AI ANALYSIS ERROR"
+        )
+
+        print(
             repr(exc)
         )
 
-        gc.collect()
+        print(
+            traceback.format_exc()
+        )
 
-        return JSONResponse(
+        print(
+            "=================================================="
+        )
+
+        return error_response(
+
+            (
+                "Unable to analyze the resume. "
+                "The server encountered an internal error. "
+                "Please try again."
+            ),
 
             status_code=500,
-
-            content={
-
-                "success": False,
-
-                "error": (
-                    "Unable to analyze the resume. "
-                    "Please try again."
-                ),
-            }
         )
 
 
     # ========================================================
-    # Always Release Uploaded Bytes
+    # Always Release Temporary Objects
     # ========================================================
 
     finally:
 
-        if file_bytes is not None:
-
-            del file_bytes
+        file_bytes = None
+        resume_text = None
+        skill_details = None
+        detected_skills = None
+        analysis = None
+        questions = None
+        interview_results = None
 
         gc.collect()
 
@@ -510,7 +715,7 @@ async def analyze_resume(
 
 @app.get(
     "/api/skills/status",
-    response_class=JSONResponse
+    response_class=JSONResponse,
 )
 def skills_status():
     """
@@ -521,20 +726,34 @@ def skills_status():
 
     try:
 
-        return skill_engine_status()
+        status = skill_engine_status()
+
+        if status is None:
+
+            return {
+
+                "status": "unknown",
+
+                "message":
+                    "Skill engine returned no status.",
+            }
+
+
+        return status
+
 
     except Exception as exc:
 
-        return JSONResponse(
+        print(
+            "Skill engine status error:",
+            repr(exc),
+        )
+
+        return error_response(
+
+            str(exc),
 
             status_code=500,
-
-            content={
-
-                "status": "error",
-
-                "error": str(exc),
-            }
         )
 
 
@@ -544,7 +763,7 @@ def skills_status():
 
 @app.get(
     "/api",
-    response_class=JSONResponse
+    response_class=JSONResponse,
 )
 def api_info():
     """
@@ -599,7 +818,7 @@ def api_info():
 
             "memory_target":
                 "512 MB",
-        }
+        },
     }
 
 
@@ -609,7 +828,7 @@ def api_info():
 
 @app.get(
     "/ready",
-    response_class=JSONResponse
+    response_class=JSONResponse,
 )
 def readiness_check():
     """
@@ -623,12 +842,37 @@ def readiness_check():
 
         skill_status = skill_engine_status()
 
-        skills_ready = (
+
+        if not isinstance(
+            skill_status,
+            dict,
+        ):
+
+            return JSONResponse(
+
+                status_code=503,
+
+                content={
+
+                    "status":
+                        "not_ready",
+
+                    "prediction_engine":
+                        "loaded",
+
+                    "skill_engine":
+                        "unknown",
+                },
+            )
+
+
+        skills_ready = bool(
             skill_status.get(
                 "skills_file_exists",
-                False
+                False,
             )
         )
+
 
         return {
 
@@ -643,11 +887,20 @@ def readiness_check():
             "skill_engine":
                 skill_status.get(
                     "status",
-                    "unknown"
+                    "unknown",
                 ),
+
+            "skills_file_exists":
+                skills_ready,
         }
 
+
     except Exception as exc:
+
+        print(
+            "Readiness check error:",
+            repr(exc),
+        )
 
         return JSONResponse(
 
@@ -655,10 +908,18 @@ def readiness_check():
 
             content={
 
-                "status": "not_ready",
+                "status":
+                    "not_ready",
 
-                "error": str(exc),
-            }
+                "prediction_engine":
+                    "unknown",
+
+                "skill_engine":
+                    "error",
+
+                "error":
+                    readable_error(exc),
+            },
         )
 
 
