@@ -1,60 +1,86 @@
 """
-================================================================
+===============================================================
 TalentMatch AI
 Production FastAPI Application
-================================================================
+===============================================================
 
-Optimized for:
+Render Free / 512 MB diagnostic version.
 
-- Render Free
-- 512 MB RAM
-- CPU inference
-- Lazy AI model loading
-- PDF / DOCX / TXT resume parsing
+IMPORTANT DESIGN:
 
-DIAGNOSTIC VERSION
-
-This version adds detailed diagnostic logging around:
-
-1. Application startup
-2. /health
-3. /ready
-4. /analyze
-5. File upload
-6. Resume parsing
-7. Skill extraction
-8. Prediction engine loading
-9. Ranking engine loading
-10. Job analysis
-11. Interview generation
-12. Response construction
-13. Exceptions
-14. Cleanup
-15. Memory usage where available
-
-IMPORTANT:
-
-The prediction engine is NOT loaded during startup.
-
-It is loaded only when /analyze is called.
-
-================================================================
+- FastAPI startup must remain lightweight.
+- predict.py is NOT imported during startup.
+- ranking_engine is NOT imported during startup.
+- Resume parsing is performed only during /analyze.
+- Skill extraction is performed only during /analyze.
+- AI prediction engine is loaded only during /analyze.
+- Every important operation prints timing information.
+- Full exceptions and tracebacks are printed to Render logs.
+- HEAD / is supported so Render health checks do not produce 405.
+===============================================================
 """
 
-# ================================================================
+# ============================================================
 # STANDARD LIBRARY
-# ================================================================
+# ============================================================
 
 import gc
-import os
-import sys
-import time
 import threading
 import traceback
+import time
+import os
 
-# ================================================================
+
+# ============================================================
+# STARTUP TIMER
+# ============================================================
+
+APP_START_TIME = time.perf_counter()
+
+
+def elapsed():
+    """Return elapsed application time in seconds."""
+    return round(
+        time.perf_counter() - APP_START_TIME,
+        3,
+    )
+
+
+def log(message, *args):
+    """
+    Timestamped diagnostic logger.
+
+    Render logs will show exactly where the application is.
+    """
+
+    timestamp = elapsed()
+
+    if args:
+        print(
+            f"[TalentMatch {timestamp:>8.3f}s] "
+            + message,
+            *args,
+            flush=True,
+        )
+    else:
+        print(
+            f"[TalentMatch {timestamp:>8.3f}s] "
+            + message,
+            flush=True,
+        )
+
+
+log("==================================================")
+log("TalentMatch AI application module loading")
+log("Python PID: %s", os.getpid())
+log("==================================================")
+
+
+# ============================================================
 # FASTAPI
-# ================================================================
+# ============================================================
+
+log("Importing FastAPI...")
 
 from fastapi import (
     FastAPI,
@@ -69,41 +95,83 @@ from fastapi.responses import (
     JSONResponse,
 )
 
+log("FastAPI imported successfully.")
+
+
+# ============================================================
+# STATIC / TEMPLATES
+# ============================================================
+
+log("Importing Jinja2Templates and StaticFiles...")
+
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 
-# ================================================================
+log("Template/static imports complete.")
+
+
+# ============================================================
 # CONFIG
-# ================================================================
+# ============================================================
 
-from config import (
-    MAX_UPLOAD_SIZE,
-    MAX_RETURNED_JOBS,
-    MAX_RETURNED_INTERVIEWS,
-)
+log("Importing config...")
 
-# ================================================================
-# RESUME PARSER
-# ================================================================
+try:
 
-from resume_parser import (
-    parse_resume,
-    ResumeParsingError,
-    parser_status,
-)
+    from config import (
+        MAX_UPLOAD_SIZE,
+        MAX_RETURNED_JOBS,
+        MAX_RETURNED_INTERVIEWS,
+    )
 
-# ================================================================
-# SKILL EXTRACTOR
-# ================================================================
+    log(
+        "Config imported successfully."
+    )
 
-from skill_extractor import (
-    extract_skill_details,
-    skill_engine_status,
-)
+    log(
+        "MAX_UPLOAD_SIZE=%s",
+        MAX_UPLOAD_SIZE,
+    )
 
-# ================================================================
+    log(
+        "MAX_RETURNED_JOBS=%s",
+        MAX_RETURNED_JOBS,
+    )
+
+    log(
+        "MAX_RETURNED_INTERVIEWS=%s",
+        MAX_RETURNED_INTERVIEWS,
+    )
+
+except Exception as exc:
+
+    log(
+        "CONFIG IMPORT FAILED"
+    )
+
+    log(
+        "Exception type: %s",
+        type(exc).__name__,
+    )
+
+    log(
+        "Exception: %r",
+        exc,
+    )
+
+    log(
+        "Traceback:\n%s",
+        traceback.format_exc(),
+    )
+
+    raise
+
+
+# ============================================================
 # APPLICATION
-# ================================================================
+# ============================================================
+
+log("Creating FastAPI application...")
 
 app = FastAPI(
     title="TalentMatch AI",
@@ -114,239 +182,56 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# ================================================================
-# DIAGNOSTIC LOGGER
-# ================================================================
-
-START_TIME = time.time()
+log("FastAPI application created.")
 
 
-def log(message):
-    """
-    Central diagnostic logger.
-
-    flush=True ensures messages appear immediately
-    in Render logs.
-    """
-
-    print(
-        f"[TalentMatch DEBUG] {message}",
-        flush=True,
-    )
-
-
-def log_separator(title=""):
-    """
-    Print a highly visible diagnostic separator.
-    """
-
-    print(
-        "",
-        flush=True,
-    )
-
-    print(
-        "=" * 70,
-        flush=True,
-    )
-
-    if title:
-        print(
-            f"[TalentMatch DEBUG] {title}",
-            flush=True,
-        )
-
-    print(
-        "=" * 70,
-        flush=True,
-    )
-
-
-def log_exception(title, exc):
-    """
-    Print complete exception diagnostics.
-    """
-
-    log_separator(title)
-
-    print(
-        f"Exception type: {type(exc).__name__}",
-        flush=True,
-    )
-
-    print(
-        f"Exception repr: {repr(exc)}",
-        flush=True,
-    )
-
-    print(
-        f"Exception str: {str(exc)}",
-        flush=True,
-    )
-
-    print(
-        "Full traceback:",
-        flush=True,
-    )
-
-    print(
-        traceback.format_exc(),
-        flush=True,
-    )
-
-    print(
-        "=" * 70,
-        flush=True,
-    )
-
-
-# ================================================================
-# OPTIONAL MEMORY DIAGNOSTICS
-# ================================================================
-
-def memory_status():
-    """
-    Return lightweight process memory information.
-
-    This does not require psutil.
-
-    On Linux / Render, /proc/self/status is normally available.
-    """
-
-    try:
-
-        status_path = "/proc/self/status"
-
-        if not os.path.exists(status_path):
-            return {
-                "available": False,
-            }
-
-        memory = {}
-
-        with open(
-            status_path,
-            "r",
-            encoding="utf-8",
-            errors="ignore",
-        ) as f:
-
-            for line in f:
-
-                if (
-                    line.startswith("VmRSS:")
-                    or line.startswith("VmSize:")
-                    or line.startswith("VmPeak:")
-                ):
-
-                    parts = line.split()
-
-                    if len(parts) >= 2:
-
-                        memory[
-                            parts[0].rstrip(":")
-                        ] = f"{parts[1]} {parts[2] if len(parts) > 2 else 'kB'}"
-
-        memory["available"] = True
-
-        return memory
-
-    except Exception as exc:
-
-        log(
-            f"Memory diagnostic failed: {repr(exc)}"
-        )
-
-        return {
-            "available": False,
-            "error": str(exc),
-        }
-
-
-def log_memory(label):
-    """
-    Print current memory information.
-    """
-
-    try:
-
-        log(
-            f"MEMORY [{label}]: {memory_status()}"
-        )
-
-    except Exception as exc:
-
-        log(
-            f"Unable to log memory: {repr(exc)}"
-        )
-
-
-# ================================================================
-# STARTUP DIAGNOSTICS
-# ================================================================
-
-log_separator(
-    "TalentMatch AI application module loading"
-)
-
-log(
-    f"Python version: {sys.version}"
-)
-
-log(
-    f"Platform: {sys.platform}"
-)
-
-log(
-    f"Working directory: {os.getcwd()}"
-)
-
-log(
-    f"MAX_UPLOAD_SIZE: {MAX_UPLOAD_SIZE}"
-)
-
-log(
-    f"MAX_RETURNED_JOBS: {MAX_RETURNED_JOBS}"
-)
-
-log(
-    f"MAX_RETURNED_INTERVIEWS: {MAX_RETURNED_INTERVIEWS}"
-)
-
-log_memory(
-    "application import"
-)
-
-# ================================================================
+# ============================================================
 # STATIC FILES
-# ================================================================
+# ============================================================
+
+log("Mounting static directory...")
 
 try:
 
     app.mount(
         "/static",
-        StaticFiles(
-            directory="static"
-        ),
+        StaticFiles(directory="static"),
         name="static",
     )
 
     log(
-        "Static files mounted successfully."
+        "Static directory mounted successfully."
     )
 
 except Exception as exc:
 
-    log_exception(
-        "STATIC FILE MOUNT ERROR",
+    log(
+        "STATIC DIRECTORY ERROR"
+    )
+
+    log(
+        "Exception type: %s",
+        type(exc).__name__,
+    )
+
+    log(
+        "Exception: %r",
         exc,
+    )
+
+    log(
+        "Traceback:\n%s",
+        traceback.format_exc(),
     )
 
     raise
 
-# ================================================================
+
+# ============================================================
 # TEMPLATES
-# ================================================================
+# ============================================================
+
+log("Creating Jinja2 template engine...")
 
 try:
 
@@ -355,256 +240,353 @@ try:
     )
 
     log(
-        "Jinja2 templates initialized successfully."
+        "Template engine initialized successfully."
     )
 
 except Exception as exc:
 
-    log_exception(
-        "TEMPLATE INITIALIZATION ERROR",
+    log(
+        "TEMPLATE ENGINE ERROR"
+    )
+
+    log(
+        "Exception type: %s",
+        type(exc).__name__,
+    )
+
+    log(
+        "Exception: %r",
         exc,
+    )
+
+    log(
+        "Traceback:\n%s",
+        traceback.format_exc(),
     )
 
     raise
 
-# ================================================================
+
+# ============================================================
 # LAZY AI ENGINE
-# ================================================================
+# ============================================================
 
 _prediction_engine = None
 
 _prediction_engine_lock = threading.Lock()
 
 
-# ================================================================
-# GET PREDICTION ENGINE
-# ================================================================
+# ============================================================
+# LAZY MODULE REFERENCES
+# ============================================================
+
+_resume_parser_module = None
+_skill_extractor_module = None
+_ranking_engine_module = None
+
+
+# ============================================================
+# LAZY RESUME PARSER
+# ============================================================
+
+def get_resume_parser():
+
+    global _resume_parser_module
+
+    if _resume_parser_module is not None:
+
+        return _resume_parser_module
+
+    log(
+        "Lazy-loading resume_parser..."
+    )
+
+    start = time.perf_counter()
+
+    try:
+
+        import resume_parser
+
+        _resume_parser_module = resume_parser
+
+        log(
+            "resume_parser loaded in %.3f seconds.",
+            time.perf_counter() - start,
+        )
+
+        return _resume_parser_module
+
+    except Exception as exc:
+
+        log(
+            "RESUME_PARSER IMPORT FAILED"
+        )
+
+        log(
+            "Exception type: %s",
+            type(exc).__name__,
+        )
+
+        log(
+            "Exception: %r",
+            exc,
+        )
+
+        log(
+            "Traceback:\n%s",
+            traceback.format_exc(),
+        )
+
+        raise
+
+
+# ============================================================
+# LAZY SKILL EXTRACTOR
+# ============================================================
+
+def get_skill_extractor():
+
+    global _skill_extractor_module
+
+    if _skill_extractor_module is not None:
+
+        return _skill_extractor_module
+
+    log(
+        "Lazy-loading skill_extractor..."
+    )
+
+    start = time.perf_counter()
+
+    try:
+
+        import skill_extractor
+
+        _skill_extractor_module = skill_extractor
+
+        log(
+            "skill_extractor loaded in %.3f seconds.",
+            time.perf_counter() - start,
+        )
+
+        return _skill_extractor_module
+
+    except Exception as exc:
+
+        log(
+            "SKILL_EXTRACTOR IMPORT FAILED"
+        )
+
+        log(
+            "Exception type: %s",
+            type(exc).__name__,
+        )
+
+        log(
+            "Exception: %r",
+            exc,
+        )
+
+        log(
+            "Traceback:\n%s",
+            traceback.format_exc(),
+        )
+
+        raise
+
+
+# ============================================================
+# LAZY RANKING ENGINE
+# ============================================================
+
+def get_ranking_engine():
+
+    global _ranking_engine_module
+
+    if _ranking_engine_module is not None:
+
+        return _ranking_engine_module
+
+    log(
+        "Lazy-loading ranking_engine..."
+    )
+
+    start = time.perf_counter()
+
+    try:
+
+        import ranking_engine
+
+        _ranking_engine_module = ranking_engine
+
+        log(
+            "ranking_engine loaded in %.3f seconds.",
+            time.perf_counter() - start,
+        )
+
+        return _ranking_engine_module
+
+    except Exception as exc:
+
+        log(
+            "RANKING_ENGINE IMPORT FAILED"
+        )
+
+        log(
+            "Exception type: %s",
+            type(exc).__name__,
+        )
+
+        log(
+            "Exception: %r",
+            exc,
+        )
+
+        log(
+            "Traceback:\n%s",
+            traceback.format_exc(),
+        )
+
+        raise
+
+
+# ============================================================
+# LAZY PREDICTION ENGINE
+# ============================================================
 
 def get_prediction_engine():
 
     global _prediction_engine
 
-    # ------------------------------------------------------------
-    # Already initialized
-    # ------------------------------------------------------------
-
     if _prediction_engine is not None:
 
         log(
-            "Prediction engine already exists. "
-            "Reusing existing engine."
+            "Prediction engine already initialized."
         )
 
         return _prediction_engine
 
-    # ------------------------------------------------------------
-    # Lock initialization
-    # ------------------------------------------------------------
-
     log(
-        "Prediction engine is not initialized."
+        "=================================================="
     )
 
     log(
-        "Waiting for prediction-engine initialization lock..."
+        "LAZY AI ENGINE INITIALIZATION STARTED"
     )
+
+    log(
+        "=================================================="
+    )
+
+    start = time.perf_counter()
 
     with _prediction_engine_lock:
 
-        log(
-            "Prediction-engine initialization lock acquired."
-        )
-
-        # --------------------------------------------------------
-        # Check again
-        # --------------------------------------------------------
-
         if _prediction_engine is not None:
 
-            log(
-                "Another request initialized the prediction "
-                "engine while this request was waiting."
-            )
-
             return _prediction_engine
-
-        # --------------------------------------------------------
-        # Diagnostics
-        # --------------------------------------------------------
-
-        log_separator(
-            "STARTING LAZY PREDICTION ENGINE INITIALIZATION"
-        )
-
-        log_memory(
-            "before predict.py import"
-        )
-
-        start_time = time.time()
 
         try:
 
             log(
-                "About to execute: from predict import engine"
+                "Importing predict.py..."
             )
 
-            log(
-                "IMPORTANT: Any import-time error in predict.py "
-                "will appear immediately below."
-            )
-
-            # ====================================================
-            # THIS IS THE IMPORTANT IMPORT
-            # ====================================================
+            import_start = time.perf_counter()
 
             from predict import engine
 
-            elapsed = (
-                time.time() - start_time
-            )
-
             log(
-                f"predict.py imported successfully "
-                f"in {elapsed:.2f} seconds."
+                "predict.py imported in %.3f seconds.",
+                time.perf_counter() - import_start,
             )
-
-            log(
-                f"Imported engine object type: "
-                f"{type(engine).__name__}"
-            )
-
-            # ----------------------------------------------------
-            # Validate
-            # ----------------------------------------------------
 
             if engine is None:
 
                 raise RuntimeError(
-                    "predict.py returned a null "
-                    "prediction engine."
+                    "predict.py returned a null engine."
                 )
 
             _prediction_engine = engine
 
             log(
-                "Prediction engine object stored successfully."
+                "Prediction engine object created."
             )
-
-            # ----------------------------------------------------
-            # Inspect engine
-            # ----------------------------------------------------
-
-            try:
-
-                log(
-                    "Prediction engine attributes:"
-                )
-
-                log(
-                    str(
-                        [
-                            attr
-                            for attr in dir(
-                                _prediction_engine
-                            )
-                            if not attr.startswith("__")
-                        ]
-                    )
-                )
-
-            except Exception as inspect_error:
-
-                log(
-                    "Unable to inspect prediction engine: "
-                    f"{repr(inspect_error)}"
-                )
-
-            # ----------------------------------------------------
-            # Engine status
-            # ----------------------------------------------------
-
-            try:
-
-                if hasattr(
-                    _prediction_engine,
-                    "is_loaded",
-                ):
-
-                    loaded = (
-                        _prediction_engine.is_loaded()
-                    )
-
-                    log(
-                        f"Prediction engine is_loaded(): "
-                        f"{loaded}"
-                    )
-
-                else:
-
-                    log(
-                        "Prediction engine has no is_loaded() method."
-                    )
-
-            except Exception as status_error:
-
-                log(
-                    "Could not determine prediction engine "
-                    f"loaded state: {repr(status_error)}"
-                )
-
-            log_memory(
-                "after predict.py import"
-            )
-
-            gc.collect()
 
             log(
-                "Garbage collection completed after "
-                "prediction-engine initialization."
+                "Prediction engine type: %s",
+                type(engine).__name__,
             )
 
-            log_separator(
-                "PREDICTION ENGINE INITIALIZATION SUCCESS"
+            log(
+                "Prediction engine initialization phase "
+                "completed in %.3f seconds.",
+                time.perf_counter() - start,
+            )
+
+            log(
+                "=================================================="
             )
 
             return _prediction_engine
 
-        # ========================================================
-        # MEMORY ERROR
-        # ========================================================
-
-        except MemoryError as exc:
+        except MemoryError:
 
             _prediction_engine = None
 
-            log_memory(
-                "MEMORY ERROR state"
+            log(
+                "=================================================="
             )
 
-            log_exception(
-                "PREDICTION ENGINE MEMORY ERROR",
-                exc,
+            log(
+                "PREDICTION ENGINE MEMORY ERROR"
+            )
+
+            log(
+                "Render memory limit was exceeded."
+            )
+
+            log(
+                "=================================================="
             )
 
             gc.collect()
 
             raise
-
-        # ========================================================
-        # ALL OTHER ERRORS
-        # ========================================================
 
         except Exception as exc:
 
             _prediction_engine = None
 
-            log_memory(
-                "prediction engine initialization failure"
+            log(
+                "=================================================="
             )
 
-            log_exception(
-                "PREDICTION ENGINE INITIALIZATION ERROR",
+            log(
+                "PREDICTION ENGINE INITIALIZATION FAILED"
+            )
+
+            log(
+                "Exception type: %s",
+                type(exc).__name__,
+            )
+
+            log(
+                "Exception: %r",
                 exc,
+            )
+
+            log(
+                "Full traceback:"
+            )
+
+            log(
+                "%s",
+                traceback.format_exc(),
+            )
+
+            log(
+                "=================================================="
             )
 
             gc.collect()
@@ -612,9 +594,9 @@ def get_prediction_engine():
             raise
 
 
-# ================================================================
+# ============================================================
 # PREDICTION ENGINE STATUS
-# ================================================================
+# ============================================================
 
 def prediction_engine_status():
 
@@ -662,16 +644,16 @@ def prediction_engine_status():
     except Exception as exc:
 
         log(
-            "Prediction engine status error: "
-            f"{repr(exc)}"
+            "Prediction engine status check failed: %r",
+            exc,
         )
 
         return "unavailable"
 
 
-# ================================================================
-# READABLE ERROR
-# ================================================================
+# ============================================================
+# ERROR HELPERS
+# ============================================================
 
 def readable_error(error):
 
@@ -700,9 +682,7 @@ def readable_error(error):
             "msg",
         ):
 
-            value = error.get(
-                key
-            )
+            value = error.get(key)
 
             if value:
 
@@ -730,10 +710,6 @@ def readable_error(error):
     return str(error)
 
 
-# ================================================================
-# ERROR RESPONSE
-# ================================================================
-
 def error_response(
     message,
     status_code=500,
@@ -752,47 +728,9 @@ def error_response(
     )
 
 
-# ================================================================
-# HEALTH CHECK
-# ================================================================
-
-@app.get(
-    "/health",
-    response_class=JSONResponse,
-)
-def health_check():
-
-    log(
-        "GET /health received."
-    )
-
-    result = {
-
-        "status": "healthy",
-
-        "service":
-            "TalentMatch AI",
-
-        "version":
-            "1.0.0",
-
-        "memory_strategy":
-            "lazy_model_loading",
-
-        "prediction_engine":
-            prediction_engine_status(),
-    }
-
-    log(
-        f"/health response: {result}"
-    )
-
-    return result
-
-
-# ================================================================
-# HOME PAGE
-# ================================================================
+# ============================================================
+# ROOT / HEAD
+# ============================================================
 
 @app.get(
     "/",
@@ -806,34 +744,75 @@ async def home(
         "GET / received."
     )
 
-    try:
+    start = time.perf_counter()
 
-        response = templates.TemplateResponse(
-            "index.html",
-            {
-                "request": request,
-            },
-        )
+    response = templates.TemplateResponse(
+        "index.html",
+        {
+            "request": request,
+        },
+    )
 
-        log(
-            "index.html rendered successfully."
-        )
+    log(
+        "GET / completed in %.3f seconds.",
+        time.perf_counter() - start,
+    )
 
-        return response
-
-    except Exception as exc:
-
-        log_exception(
-            "HOME PAGE ERROR",
-            exc,
-        )
-
-        raise
+    return response
 
 
-# ================================================================
+@app.head("/")
+async def home_head():
+
+    log(
+        "HEAD / received."
+    )
+
+    return JSONResponse(
+        content=None,
+        status_code=200,
+    )
+
+
+# ============================================================
+# HEALTH
+# ============================================================
+
+@app.get(
+    "/health",
+    response_class=JSONResponse,
+)
+def health_check():
+
+    log(
+        "GET /health received."
+    )
+
+    return {
+
+        "status":
+            "healthy",
+
+        "service":
+            "TalentMatch AI",
+
+        "version":
+            "1.0.0",
+
+        "uptime_seconds":
+            elapsed(),
+
+        "memory_strategy":
+            "lazy_model_loading",
+
+        "prediction_engine":
+            prediction_engine_status(),
+    }
+
+
+# ============================================================
 # API INFORMATION
-# ================================================================
+# ============================================================
 
 @app.get(
     "/api",
@@ -859,14 +838,23 @@ def api_info():
         "features": [
 
             "Resume parsing",
+
             "PDF parsing with pypdf",
+
             "DOCX parsing with python-docx",
+
             "TXT parsing",
+
             "Semantic job matching",
+
             "TF-IDF keyword matching",
+
             "Hybrid job ranking",
+
             "Resume skill extraction",
+
             "Skill frequency analysis",
+
             "Interview question retrieval",
         ],
 
@@ -905,9 +893,9 @@ def api_info():
     }
 
 
-# ================================================================
+# ============================================================
 # PARSER STATUS
-# ================================================================
+# ============================================================
 
 @app.get(
     "/api/parser/status",
@@ -915,47 +903,47 @@ def api_info():
 )
 def parser_status_endpoint():
 
-    log(
-        "GET /api/parser/status received."
-    )
-
     try:
 
-        status = parser_status()
-
         log(
-            f"Parser status: {status}"
+            "Checking parser status..."
         )
 
-        if status is None:
+        parser_module = (
+            get_resume_parser()
+        )
 
-            return {
+        status = (
+            parser_module.parser_status()
+        )
 
-                "status":
-                    "unknown",
-
-                "message":
-                    "Parser returned no status.",
-            }
+        log(
+            "Parser status: %s",
+            status,
+        )
 
         return status
 
     except Exception as exc:
 
-        log_exception(
-            "PARSER STATUS ERROR",
-            exc,
+        log(
+            "PARSER STATUS ERROR"
+        )
+
+        log(
+            "%s",
+            traceback.format_exc(),
         )
 
         return error_response(
             str(exc),
-            status_code=500,
+            500,
         )
 
 
-# ================================================================
-# SKILL ENGINE STATUS
-# ================================================================
+# ============================================================
+# SKILL STATUS
+# ============================================================
 
 @app.get(
     "/api/skills/status",
@@ -963,47 +951,47 @@ def parser_status_endpoint():
 )
 def skills_status():
 
-    log(
-        "GET /api/skills/status received."
-    )
-
     try:
 
-        status = skill_engine_status()
-
         log(
-            f"Skill engine status: {status}"
+            "Checking skill engine status..."
         )
 
-        if status is None:
+        skill_module = (
+            get_skill_extractor()
+        )
 
-            return {
+        status = (
+            skill_module.skill_engine_status()
+        )
 
-                "status":
-                    "unknown",
-
-                "message":
-                    "Skill engine returned no status.",
-            }
+        log(
+            "Skill engine status: %s",
+            status,
+        )
 
         return status
 
     except Exception as exc:
 
-        log_exception(
-            "SKILL ENGINE STATUS ERROR",
-            exc,
+        log(
+            "SKILL ENGINE STATUS ERROR"
+        )
+
+        log(
+            "%s",
+            traceback.format_exc(),
         )
 
         return error_response(
             str(exc),
-            status_code=500,
+            500,
         )
 
 
-# ================================================================
-# READINESS CHECK
-# ================================================================
+# ============================================================
+# READINESS
+# ============================================================
 
 @app.get(
     "/ready",
@@ -1017,134 +1005,125 @@ def readiness_check():
 
     try:
 
-        # ========================================================
-        # PARSER
-        # ========================================================
+        # ----------------------------------------------------
+        # Do NOT load prediction engine.
+        # ----------------------------------------------------
 
-        current_parser_status = (
-            parser_status()
+        parser_module = (
+            get_resume_parser()
+        )
+
+        skill_module = (
+            get_skill_extractor()
+        )
+
+        parser_status_value = (
+            parser_module.parser_status()
+        )
+
+        skill_status_value = (
+            skill_module.skill_engine_status()
         )
 
         log(
-            f"Parser readiness: "
-            f"{current_parser_status}"
+            "Parser readiness: %s",
+            parser_status_value,
+        )
+
+        log(
+            "Skill readiness: %s",
+            skill_status_value,
         )
 
         parser_ready = (
 
             isinstance(
-                current_parser_status,
+                parser_status_value,
                 dict,
             )
 
             and
 
-            current_parser_status.get(
+            parser_status_value.get(
                 "status"
-            ) == "ready"
-        )
-
-        # ========================================================
-        # SKILLS
-        # ========================================================
-
-        current_skill_status = (
-            skill_engine_status()
-        )
-
-        log(
-            f"Skill-engine readiness: "
-            f"{current_skill_status}"
+            )
+            == "ready"
         )
 
         if not isinstance(
-            current_skill_status,
+            skill_status_value,
             dict,
         ):
 
-            current_skill_status = {}
+            skill_status_value = {}
 
         skills_file_exists = bool(
-
-            current_skill_status.get(
+            skill_status_value.get(
                 "skills_file_exists",
                 False,
             )
         )
 
-        skills_status_value = (
-            current_skill_status.get(
-                "status"
-            )
-        )
-
-        skills_ready = (
+        skill_ready = (
 
             skills_file_exists
 
             or
 
-            skills_status_value == "ready"
-        )
-
-        # ========================================================
-        # PREDICTION ENGINE
-        #
-        # DO NOT LOAD IT HERE
-        # ========================================================
-
-        prediction_status = (
-            prediction_engine_status()
+            skill_status_value.get(
+                "status"
+            )
+            == "ready"
         )
 
         application_ready = (
-
             parser_ready
-
             and
-
-            skills_ready
+            skill_ready
         )
 
-        result = {
+        return {
 
             "status":
-                (
-                    "ready"
-                    if application_ready
-                    else "degraded"
-                ),
-
-            "prediction_engine":
-                prediction_status,
-
-            "prediction_engine_status":
-                prediction_status,
+                "ready"
+                if application_ready
+                else "degraded",
 
             "lazy_loading":
                 True,
 
+            "prediction_engine":
+                prediction_engine_status(),
+
             "resume_parser":
-                current_parser_status,
+                parser_status_value,
 
             "skill_engine":
-                current_skill_status,
+                skill_status_value,
 
             "skills_file_exists":
                 skills_file_exists,
         }
 
-        log(
-            f"/ready response: {result}"
-        )
-
-        return result
-
     except Exception as exc:
 
-        log_exception(
-            "READINESS CHECK ERROR",
+        log(
+            "READINESS CHECK FAILED"
+        )
+
+        log(
+            "Exception type: %s",
+            type(exc).__name__,
+        )
+
+        log(
+            "Exception: %r",
             exc,
+        )
+
+        log(
+            "Traceback:\n%s",
+            traceback.format_exc(),
         )
 
         return JSONResponse(
@@ -1159,23 +1138,15 @@ def readiness_check():
                 "prediction_engine":
                     prediction_engine_status(),
 
-                "resume_parser":
-                    "error",
-
-                "skill_engine":
-                    "error",
-
                 "error":
-                    readable_error(
-                        exc
-                    ),
+                    readable_error(exc),
             },
         )
 
 
-# ================================================================
-# RESUME ANALYSIS
-# ================================================================
+# ============================================================
+# ANALYZE RESUME
+# ============================================================
 
 @app.post(
     "/analyze",
@@ -1184,14 +1155,28 @@ async def analyze_resume(
     file: UploadFile = File(...),
 ):
 
-    request_start = time.time()
+    request_start = time.perf_counter()
 
-    log_separator(
-        "NEW /analyze REQUEST"
+    log(
+        "=================================================="
     )
 
-    log_memory(
-        "start of /analyze"
+    log(
+        "POST /analyze RECEIVED"
+    )
+
+    log(
+        "Filename: %s",
+        file.filename,
+    )
+
+    log(
+        "Content type: %s",
+        file.content_type,
+    )
+
+    log(
+        "=================================================="
     )
 
     file_bytes = None
@@ -1204,42 +1189,20 @@ async def analyze_resume(
 
     try:
 
-        # ========================================================
-        # REQUEST INFORMATION
-        # ========================================================
-
-        log(
-            f"Uploaded filename: {file.filename}"
-        )
-
-        log(
-            f"Uploaded content type: "
-            f"{file.content_type}"
-        )
-
-        log(
-            f"Configured maximum upload size: "
-            f"{MAX_UPLOAD_SIZE} bytes"
-        )
-
-        # ========================================================
-        # VALIDATE FILENAME
-        # ========================================================
+        # ====================================================
+        # FILENAME
+        # ====================================================
 
         if not file.filename:
 
-            log(
-                "ERROR: No filename supplied."
-            )
-
             return error_response(
                 "Please upload a resume.",
-                status_code=400,
+                400,
             )
 
-        # ========================================================
-        # VALIDATE EXTENSION
-        # ========================================================
+        # ====================================================
+        # EXTENSION
+        # ====================================================
 
         filename = (
             file.filename.lower()
@@ -1251,49 +1214,37 @@ async def analyze_resume(
             ".txt",
         )
 
-        log(
-            f"Detected filename: {filename}"
-        )
-
         if not filename.endswith(
             supported_extensions
         ):
 
-            log(
-                "ERROR: Unsupported file extension."
-            )
-
             return error_response(
-
                 (
                     "Unsupported resume format. "
                     "Please upload a PDF, DOCX or TXT file."
                 ),
-
-                status_code=400,
+                400,
             )
 
         log(
-            "File extension validation passed."
+            "File extension validated."
         )
 
-        # ========================================================
+        # ====================================================
         # READ FILE
-        # ========================================================
+        # ====================================================
 
-        log_separator(
-            "READING UPLOADED FILE"
+        log(
+            "Beginning upload read..."
         )
+
+        read_start = time.perf_counter()
 
         chunks = []
 
         total_size = 0
 
-        chunk_size = (
-            1024 * 1024
-        )
-
-        read_start = time.time()
+        chunk_size = 256 * 1024
 
         while True:
 
@@ -1302,18 +1253,9 @@ async def analyze_resume(
             )
 
             if not chunk:
-
                 break
 
-            total_size += len(
-                chunk
-            )
-
-            log(
-                f"Received chunk: "
-                f"{len(chunk)} bytes; "
-                f"total: {total_size} bytes"
-            )
+            total_size += len(chunk)
 
             if (
                 total_size
@@ -1322,61 +1264,45 @@ async def analyze_resume(
             ):
 
                 log(
-                    "ERROR: Upload exceeded "
-                    "MAX_UPLOAD_SIZE."
+                    "Upload exceeded maximum size."
                 )
 
                 return error_response(
-
                     (
                         "Resume exceeds the maximum "
                         "allowed file size."
                     ),
-
-                    status_code=400,
+                    400,
                 )
 
-            chunks.append(
-                chunk
-            )
+            chunks.append(chunk)
 
-        read_elapsed = (
-            time.time()
-            - read_start
+        log(
+            "Upload read completed."
         )
 
         log(
-            f"File read completed in "
-            f"{read_elapsed:.3f} seconds."
+            "Bytes received: %s",
+            total_size,
         )
 
         log(
-            f"Total uploaded bytes: "
-            f"{total_size}"
+            "Upload read time: %.3f seconds.",
+            time.perf_counter() - read_start,
         )
-
-        # ========================================================
-        # EMPTY FILE
-        # ========================================================
 
         if total_size <= 0:
 
-            log(
-                "ERROR: Uploaded file is empty."
-            )
-
             return error_response(
                 "The uploaded resume is empty.",
-                status_code=400,
+                400,
             )
 
-        # ========================================================
-        # COMBINE CHUNKS
-        # ========================================================
+        # ====================================================
+        # COMBINE
+        # ====================================================
 
-        log(
-            "Combining uploaded chunks..."
-        )
+        combine_start = time.perf_counter()
 
         file_bytes = b"".join(
             chunks
@@ -1385,95 +1311,60 @@ async def analyze_resume(
         del chunks
 
         log(
-            f"Combined file size: "
-            f"{len(file_bytes)} bytes"
+            "File bytes combined in %.3f seconds.",
+            time.perf_counter() - combine_start,
         )
 
-        log_memory(
-            "after file upload"
-        )
-
-        # ========================================================
-        # PARSE RESUME
-        # ========================================================
-
-        log_separator(
-            "STARTING RESUME PARSING"
-        )
-
-        parse_start = time.time()
+        # ====================================================
+        # PARSER
+        # ====================================================
 
         log(
-            f"Calling parse_resume() for "
-            f"{file.filename}"
+            "Loading resume parser..."
         )
 
-        resume_text = parse_resume(
-
-            file_bytes=file_bytes,
-
-            filename=file.filename,
-        )
-
-        parse_elapsed = (
-            time.time()
-            - parse_start
+        parser_module = (
+            get_resume_parser()
         )
 
         log(
-            f"parse_resume() completed in "
-            f"{parse_elapsed:.3f} seconds."
+            "Starting resume parsing..."
         )
 
-        # ========================================================
-        # RELEASE RAW FILE
-        # ========================================================
+        parse_start = time.perf_counter()
+
+        resume_text = (
+            parser_module.parse_resume(
+                file_bytes=file_bytes,
+                filename=file.filename,
+            )
+        )
+
+        log(
+            "Resume parsing completed in %.3f seconds.",
+            time.perf_counter() - parse_start,
+        )
 
         file_bytes = None
 
-        gc.collect()
-
-        log(
-            "Raw uploaded file bytes released."
-        )
-
-        log_memory(
-            "after resume parsing"
-        )
-
-        # ========================================================
-        # VERIFY EXTRACTED TEXT
-        # ========================================================
-
         if not resume_text:
 
-            log(
-                "ERROR: Parser returned empty resume text."
-            )
-
             return error_response(
-
                 (
                     "No readable text could be extracted "
                     "from the uploaded resume."
                 ),
-
-                status_code=400,
+                400,
             )
 
         log(
-            f"Extracted resume text length: "
-            f"{len(resume_text)} characters."
+            "Extracted resume characters: %s",
+            len(resume_text),
         )
 
-        log(
-            f"First 500 characters of extracted text: "
-            f"{resume_text[:500]!r}"
-        )
-
-        # ========================================================
-        # LIMIT RESUME TEXT
-        # ========================================================
+        # ====================================================
+        # LIMIT TEXT
+        # ====================================================
 
         MAX_RESUME_TEXT_CHARS = 100000
 
@@ -1484,80 +1375,55 @@ async def analyze_resume(
         ):
 
             log(
-                f"Resume text exceeds "
-                f"{MAX_RESUME_TEXT_CHARS} characters."
+                "Resume text exceeds %s characters. "
+                "Truncating.",
+                MAX_RESUME_TEXT_CHARS,
             )
 
             resume_text = resume_text[
                 :MAX_RESUME_TEXT_CHARS
             ]
 
-            log(
-                "Resume text truncated."
-            )
-
-        # ========================================================
+        # ====================================================
         # SKILL EXTRACTION
-        # ========================================================
-
-        log_separator(
-            "STARTING SKILL EXTRACTION"
-        )
-
-        skill_start = time.time()
+        # ====================================================
 
         log(
-            "Calling extract_skill_details()..."
+            "Loading skill extractor..."
         )
 
+        skill_module = (
+            get_skill_extractor()
+        )
+
+        log(
+            "Starting skill extraction..."
+        )
+
+        skill_start = time.perf_counter()
+
         skill_details = (
-            extract_skill_details(
-
+            skill_module.extract_skill_details(
                 resume_text,
-
                 max_skills=100,
             )
         )
 
-        skill_elapsed = (
-            time.time()
-            - skill_start
-        )
-
         log(
-            f"Skill extraction completed in "
-            f"{skill_elapsed:.3f} seconds."
+            "Skill extraction completed in %.3f seconds.",
+            time.perf_counter() - skill_start,
         )
-
-        log(
-            f"Raw skill_details type: "
-            f"{type(skill_details).__name__}"
-        )
-
-        log(
-            f"Raw skill_details count: "
-            f"{len(skill_details) if isinstance(skill_details, list) else 'N/A'}"
-        )
-
-        if skill_details is None:
-
-            skill_details = []
 
         if not isinstance(
             skill_details,
             list,
         ):
 
-            log(
-                "WARNING: skill_details was not a list. "
-                "Replacing with []."
-            )
-
             skill_details = []
 
-        # ========================================================
-        # BUILD DETECTED SKILLS
-        # ========================================================
+        # ====================================================
+        # DETECTED SKILLS
+        # ====================================================
 
         detected_skills = []
 
@@ -1594,172 +1460,76 @@ async def analyze_resume(
         )
 
         log(
-            f"Detected unique skills: "
-            f"{len(detected_skills)}"
+            "Detected skills: %s",
+            len(detected_skills),
         )
+
+        # ====================================================
+        # PREDICTION ENGINE
+        # ====================================================
 
         log(
-            f"Detected skills: "
-            f"{detected_skills}"
+            "Requesting prediction engine..."
         )
 
-        log_memory(
-            "after skill extraction"
+        prediction_start = (
+            time.perf_counter()
         )
-
-        # ========================================================
-        # LOAD AI ENGINE
-        # ========================================================
-
-        log_separator(
-            "REQUESTING LAZY AI ENGINE"
-        )
-
-        log(
-            "Resume parsing and skill extraction succeeded."
-        )
-
-        log(
-            "The next operation may load the ML model."
-        )
-
-        log_memory(
-            "before prediction engine"
-        )
-
-        engine_start = time.time()
 
         prediction_engine = (
             get_prediction_engine()
         )
 
-        engine_elapsed = (
-            time.time()
-            - engine_start
+        log(
+            "Prediction engine obtained in %.3f seconds.",
+            time.perf_counter()
+            -
+            prediction_start,
+        )
+
+        # ====================================================
+        # RANKING ENGINE
+        # ====================================================
+
+        ranking_module = (
+            get_ranking_engine()
         )
 
         log(
-            f"get_prediction_engine() completed in "
-            f"{engine_elapsed:.3f} seconds."
+            "Starting job analysis..."
+        )
+
+        jobs_start = time.perf_counter()
+
+        analysis = (
+            ranking_module.analyze_jobs(
+                prediction_engine=
+                    prediction_engine,
+
+                resume_text=
+                    resume_text,
+
+                top_k=
+                    MAX_RETURNED_JOBS,
+            )
         )
 
         log(
-            f"Prediction engine type: "
-            f"{type(prediction_engine).__name__}"
+            "Job analysis completed in %.3f seconds.",
+            time.perf_counter()
+            -
+            jobs_start,
         )
-
-        log(
-            f"Prediction engine status: "
-            f"{prediction_engine_status()}"
-        )
-
-        log_memory(
-            "after prediction engine"
-        )
-
-        # ========================================================
-        # RANKING ENGINE IMPORT
-        # ========================================================
-
-        log_separator(
-            "LOADING RANKING ENGINE"
-        )
-
-        ranking_import_start = time.time()
-
-        log(
-            "About to execute:"
-        )
-
-        log(
-            "from ranking_engine import "
-            "analyze_jobs, format_interview_questions"
-        )
-
-        from ranking_engine import (
-            analyze_jobs,
-            format_interview_questions,
-        )
-
-        ranking_import_elapsed = (
-            time.time()
-            - ranking_import_start
-        )
-
-        log(
-            f"ranking_engine imported successfully "
-            f"in {ranking_import_elapsed:.3f} seconds."
-        )
-
-        # ========================================================
-        # JOB ANALYSIS
-        # ========================================================
-
-        log_separator(
-            "STARTING JOB ANALYSIS"
-        )
-
-        log(
-            f"MAX_RETURNED_JOBS = "
-            f"{MAX_RETURNED_JOBS}"
-        )
-
-        job_start = time.time()
-
-        log(
-            "Calling analyze_jobs()..."
-        )
-
-        analysis = analyze_jobs(
-
-            prediction_engine=
-                prediction_engine,
-
-            resume_text=
-                resume_text,
-
-            top_k=
-                MAX_RETURNED_JOBS,
-        )
-
-        job_elapsed = (
-            time.time()
-            - job_start
-        )
-
-        log(
-            f"analyze_jobs() completed in "
-            f"{job_elapsed:.3f} seconds."
-        )
-
-        log(
-            f"Analysis type: "
-            f"{type(analysis).__name__}"
-        )
-
-        # ========================================================
-        # VALIDATE ANALYSIS
-        # ========================================================
 
         if not isinstance(
             analysis,
             dict,
         ):
 
-            log(
-                "ERROR: analyze_jobs() did not return a dict."
-            )
-
             raise RuntimeError(
-
-                "The job ranking engine returned "
+                "Job ranking engine returned "
                 "an invalid response."
             )
-
-        log(
-            f"Analysis keys: "
-            f"{list(analysis.keys())}"
-        )
 
         jobs = analysis.get(
             "jobs",
@@ -1771,68 +1541,39 @@ async def analyze_resume(
             {},
         )
 
-        if jobs is None:
-            jobs = []
-
         if not isinstance(
             jobs,
             list,
         ):
 
-            log(
-                "WARNING: jobs is not a list. "
-                "Replacing with []."
-            )
-
             jobs = []
-
-        if summary is None:
-            summary = {}
 
         if not isinstance(
             summary,
             dict,
         ):
 
-            log(
-                "WARNING: summary is not a dict. "
-                "Replacing with {}."
-            )
-
             summary = {}
 
         log(
-            f"Number of jobs returned: "
-            f"{len(jobs)}"
+            "Jobs returned: %s",
+            len(jobs),
         )
 
-        log(
-            f"Summary returned: "
-            f"{summary}"
-        )
-
-        # ========================================================
+        # ====================================================
         # INTERVIEW QUESTIONS
-        # ========================================================
-
-        log_separator(
-            "STARTING INTERVIEW QUESTION GENERATION"
-        )
+        # ====================================================
 
         log(
-            f"MAX_RETURNED_INTERVIEWS = "
-            f"{MAX_RETURNED_INTERVIEWS}"
+            "Generating interview questions..."
         )
 
-        interview_start = time.time()
-
-        log(
-            "Calling prediction_engine.interview_questions()..."
+        interview_start = (
+            time.perf_counter()
         )
 
         questions = (
             prediction_engine.interview_questions(
-
                 resume_text=
                     resume_text,
 
@@ -1841,100 +1582,47 @@ async def analyze_resume(
             )
         )
 
-        interview_elapsed = (
-            time.time()
-            - interview_start
-        )
-
         log(
-            f"interview_questions() completed in "
-            f"{interview_elapsed:.3f} seconds."
+            "Interview retrieval completed in %.3f seconds.",
+            time.perf_counter()
+            -
+            interview_start,
         )
 
-        log(
-            f"Questions type: "
-            f"{type(questions).__name__}"
-        )
-
-        if questions is None:
+        if not isinstance(
+            questions,
+            list,
+        ):
 
             questions = []
 
-        log(
-            f"Raw questions count: "
-            f"{len(questions) if isinstance(questions, list) else 'N/A'}"
-        )
-
-        # ========================================================
+        # ====================================================
         # FORMAT QUESTIONS
-        # ========================================================
-
-        log(
-            "Formatting interview questions..."
-        )
-
-        format_start = time.time()
+        # ====================================================
 
         interview_results = (
-            format_interview_questions(
-
+            ranking_module.format_interview_questions(
                 questions,
-
                 top_k=
                     MAX_RETURNED_INTERVIEWS,
             )
         )
-
-        format_elapsed = (
-            time.time()
-            - format_start
-        )
-
-        log(
-            f"format_interview_questions() completed in "
-            f"{format_elapsed:.3f} seconds."
-        )
-
-        if interview_results is None:
-
-            interview_results = []
 
         if not isinstance(
             interview_results,
             list,
         ):
 
-            log(
-                "WARNING: interview_results was not a list. "
-                "Replacing with []."
-            )
-
             interview_results = []
 
         log(
-            f"Final interview results count: "
-            f"{len(interview_results)}"
+            "Interview questions returned: %s",
+            len(interview_results),
         )
 
-        # ========================================================
-        # SKILL SUMMARY
-        # ========================================================
-
-        skill_summary = {
-
-            "total_detected":
-                len(detected_skills),
-
-            "skills":
-                detected_skills,
-
-            "details":
-                skill_details,
-        }
-
-        # ========================================================
-        # FINAL RESPONSE
-        # ========================================================
+        # ====================================================
+        # RESPONSE
+        # ====================================================
 
         response = {
 
@@ -1944,8 +1632,17 @@ async def analyze_resume(
             "summary":
                 summary,
 
-            "skills":
-                skill_summary,
+            "skills": {
+
+                "total_detected":
+                    len(detected_skills),
+
+                "skills":
+                    detected_skills,
+
+                "details":
+                    skill_details,
+            },
 
             "jobs":
                 jobs,
@@ -1954,263 +1651,189 @@ async def analyze_resume(
                 interview_results,
         }
 
-        # ========================================================
-        # FINAL DIAGNOSTICS
-        # ========================================================
-
-        total_elapsed = (
-            time.time()
-            - request_start
-        )
-
-        log_separator(
-            "ANALYSIS SUCCESS"
+        total_time = (
+            time.perf_counter()
+            -
+            request_start
         )
 
         log(
-            f"Jobs returned: {len(jobs)}"
+            "=================================================="
         )
 
         log(
-            f"Interviews returned: "
-            f"{len(interview_results)}"
+            "ANALYSIS COMPLETED SUCCESSFULLY"
         )
 
         log(
-            f"Skills detected: "
-            f"{len(detected_skills)}"
+            "Total request time: %.3f seconds.",
+            total_time,
         )
 
         log(
-            f"Total request time: "
-            f"{total_elapsed:.3f} seconds"
-        )
-
-        log_memory(
-            "before sending response"
-        )
-
-        log(
-            "Returning HTTP 200 response."
+            "=================================================="
         )
 
         return JSONResponse(
-
             status_code=200,
-
             content=response,
         )
 
-    # ============================================================
-    # RESUME PARSING ERROR
-    # ============================================================
-
-    except ResumeParsingError as exc:
-
-        log_exception(
-            "RESUME PARSING ERROR",
-            exc,
-        )
-
-        return error_response(
-            str(exc),
-            status_code=400,
-        )
-
-    # ============================================================
-    # HTTP ERROR
-    # ============================================================
-
-    except HTTPException as exc:
-
-        log_exception(
-            "HTTP ERROR",
-            exc,
-        )
-
-        return error_response(
-            exc.detail,
-            status_code=exc.status_code,
-        )
-
-    # ============================================================
-    # MEMORY ERROR
-    # ============================================================
-
-    except MemoryError as exc:
-
-        log_exception(
-            "TALENTMATCH AI MEMORY ERROR",
-            exc,
-        )
-
-        log_memory(
-            "after MemoryError"
-        )
-
-        return error_response(
-
-            (
-                "The server ran out of memory while "
-                "processing this resume. Please try "
-                "a smaller resume."
-            ),
-
-            status_code=503,
-        )
-
-    # ============================================================
-    # UNEXPECTED ERROR
-    # ============================================================
+    # ========================================================
+    # PARSER ERROR
+    # ========================================================
 
     except Exception as exc:
 
-        total_elapsed = (
-            time.time()
-            - request_start
+        log(
+            "=================================================="
         )
 
-        log_exception(
-            "TALENTMATCH AI ANALYSIS ERROR",
+        log(
+            "TALENTMATCH AI ANALYSIS ERROR"
+        )
+
+        log(
+            "Exception type: %s",
+            type(exc).__name__,
+        )
+
+        log(
+            "Exception: %r",
             exc,
         )
 
         log(
-            f"Request failed after "
-            f"{total_elapsed:.3f} seconds."
+            "Full traceback:"
         )
 
         log(
-            f"Current prediction engine status: "
-            f"{prediction_engine_status()}"
+            "%s",
+            traceback.format_exc(),
         )
 
-        log_memory(
-            "analysis exception"
+        log(
+            "Total request time before failure: %.3f seconds.",
+            time.perf_counter()
+            -
+            request_start,
         )
 
-        # ========================================================
-        # IMPORTANT DEBUG RESPONSE
-        # ========================================================
-        #
-        # This intentionally exposes the actual exception to the
-        # frontend while debugging.
-        #
-        # Once the deployment is working, change:
-        #
-        #     DEBUG_MODE = True
-        #
-        # to:
-        #
-        #     DEBUG_MODE = False
-        #
-        # ========================================================
+        log(
+            "=================================================="
+        )
 
-        DEBUG_MODE = True
+        if isinstance(
+            exc,
+            MemoryError,
+        ):
 
-        if DEBUG_MODE:
+            return error_response(
+                (
+                    "The server ran out of memory "
+                    "while analyzing the resume."
+                ),
+                503,
+            )
 
-            return JSONResponse(
+        if isinstance(
+            exc,
+            ResumeParsingError
+            if "ResumeParsingError"
+            in globals()
+            else type(None),
+        ):
 
-                status_code=500,
+            return error_response(
+                str(exc),
+                400,
+            )
 
-                content={
+        if isinstance(
+            exc,
+            HTTPException,
+        ):
 
-                    "success":
-                        False,
-
-                    "error":
-                        "TalentMatch AI analysis failed.",
-
-                    "exception_type":
-                        type(exc).__name__,
-
-                    "exception":
-                        str(exc),
-
-                    "diagnostic":
-                        (
-                            "Detailed traceback has been "
-                            "written to the Render service log."
-                        ),
-                },
+            return error_response(
+                exc.detail,
+                exc.status_code,
             )
 
         return error_response(
-
             (
                 "Unable to analyze the resume. "
-                "The server encountered an internal error. "
-                "Please try again."
+                "See server diagnostics for the "
+                "exact failure."
             ),
-
-            status_code=500,
+            500,
         )
-
-    # ============================================================
-    # CLEANUP
-    # ============================================================
 
     finally:
 
-        log(
-            "Starting /analyze request cleanup..."
-        )
+        # ====================================================
+        # CLEANUP
+        # ====================================================
 
         file_bytes = None
-
         resume_text = None
-
         skill_details = None
-
         detected_skills = None
-
         analysis = None
-
         questions = None
-
         interview_results = None
 
-        try:
-
-            await file.close()
-
-            log(
-                "Uploaded file handle closed."
-            )
-
-        except Exception as close_error:
-
-            log(
-                "Unable to close upload file: "
-                f"{repr(close_error)}"
-            )
+        log(
+            "Request temporary objects released."
+        )
 
         gc.collect()
 
-        total_elapsed = (
-            time.time()
-            - request_start
-        )
 
-        log(
-            f"Cleanup complete. "
-            f"Total request lifetime: "
-            f"{total_elapsed:.3f} seconds."
-        )
+# ============================================================
+# STARTUP EVENT
+# ============================================================
 
-        log_memory(
-            "after /analyze cleanup"
-        )
+@app.on_event(
+    "startup"
+)
+async def startup_event():
 
-        log_separator(
-            "END /analyze REQUEST"
-        )
+    log(
+        "=================================================="
+    )
+
+    log(
+        "FASTAPI STARTUP EVENT"
+    )
+
+    log(
+        "Prediction engine will NOT be loaded."
+    )
+
+    log(
+        "Ranking engine will NOT be loaded."
+    )
+
+    log(
+        "Resume parser will NOT be loaded."
+    )
+
+    log(
+        "Skill extractor will NOT be loaded."
+    )
+
+    log(
+        "Application startup is intentionally lightweight."
+    )
+
+    log(
+        "=================================================="
+    )
 
 
-# ================================================================
+# ============================================================
 # SHUTDOWN
-# ================================================================
+# ============================================================
 
 @app.on_event(
     "shutdown"
@@ -2218,23 +1841,56 @@ async def analyze_resume(
 def shutdown_event():
 
     global _prediction_engine
+    global _resume_parser_module
+    global _skill_extractor_module
+    global _ranking_engine_module
 
-    log_separator(
-        "TALENTMATCH AI SHUTDOWN"
+    log(
+        "=================================================="
     )
 
     log(
-        "Clearing prediction engine reference..."
+        "TalentMatch AI shutdown started."
     )
 
     _prediction_engine = None
+    _resume_parser_module = None
+    _skill_extractor_module = None
+    _ranking_engine_module = None
 
     gc.collect()
 
-    log_memory(
-        "after shutdown cleanup"
+    log(
+        "TalentMatch AI shutdown complete."
     )
 
     log(
-        "TalentMatch AI application shutdown complete."
+        "=================================================="
     )
+
+
+# ============================================================
+# MODULE READY
+# ============================================================
+
+log(
+    "=================================================="
+)
+
+log(
+    "TalentMatch AI app.py module loaded successfully."
+)
+
+log(
+    "Total module load time: %.3f seconds.",
+    elapsed(),
+)
+
+log(
+    "Prediction engine status: %s",
+    prediction_engine_status(),
+)
+
+log(
+    "=================================================="
+)
