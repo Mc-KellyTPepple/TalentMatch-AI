@@ -1,51 +1,63 @@
 """
-===============================================================
+================================================================
 TalentMatch AI
 Production Prediction Engine
-===============================================================
+================================================================
 
-Responsibilities:
+Responsibilities
+----------------
+• Lazy-load the MiniLM embedding model
+• Semantic job matching
+• TF-IDF job matching
+• Hybrid job ranking
+• Interview question retrieval
 
-    • Load trained artifacts once
-    • Semantic job matching
-    • TF-IDF job matching
-    • Hybrid job ranking
-    • Interview question retrieval
+Deployment
+----------
+Render Free
+512 MB RAM
+CPU inference
 
-Deployment target:
-
-    Render Free
-    512 MB RAM
-    CPU inference
-
-Memory strategy:
-
-    • Singleton model loading
-    • CPU-only inference
-    • float32 runtime embeddings
-    • Keep stored embeddings compact
-    • Avoid unnecessary array copies
-    • Avoid pandas conversions during inference
-    • Use NumPy dot products for normalized embeddings
-    • Efficient top-k selection with argpartition
-    • Explicit cleanup of temporary arrays
-    • No candidate resume storage
-===============================================================
+Memory strategy
+---------------
+• Lazy model loading
+• One prediction engine
+• One CPU worker
+• CPU-only inference
+• PyTorch thread limits
+• float16 stored embeddings
+• float32 query embeddings
+• No permanent resume storage
+• No skills database loaded here
+• No unnecessary pandas conversions
+• Efficient top-k selection
+• Explicit temporary-object cleanup
+• Small metadata datasets
+================================================================
 """
 
-# ============================================================
+# ================================================================
+# IMPORTANT: Set CPU/thread environment BEFORE importing torch
+# ================================================================
+
+import os
+
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+
+# ================================================================
 # Imports
-# ============================================================
+# ================================================================
 
 import gc
-import gzip
 import json
+import threading
 
 import joblib
 import numpy as np
 import pandas as pd
-
-from sentence_transformers import SentenceTransformer
 
 from config import (
     EMBEDDING_MODEL,
@@ -54,7 +66,6 @@ from config import (
     INTERVIEW_EMBEDDINGS,
     INTERVIEW_METADATA,
     TFIDF_MODEL,
-    SKILLS,
     DEVICE,
     SEMANTIC_WEIGHT,
     TFIDF_WEIGHT,
@@ -62,322 +73,490 @@ from config import (
     TOP_K_INTERVIEWS,
 )
 
-
-# ============================================================
+# ================================================================
 # Prediction Engine
-# ============================================================
+# ================================================================
+
 
 class PredictionEngine:
     """
-    Production AI inference engine.
+    Lightweight singleton prediction engine.
 
-    The singleton pattern ensures that the embedding model
-    and trained artifacts are loaded only once per process.
+    IMPORTANT:
+    The SentenceTransformer model is NOT loaded during import.
 
-    This is important for Render Free because repeatedly
-    loading SentenceTransformer would waste significant RAM.
+    It is loaded only when an actual prediction is requested.
+
+    This substantially reduces Render startup memory usage.
     """
 
     _instance = None
+    _instance_lock = threading.Lock()
 
-    # ========================================================
+    # ============================================================
     # Singleton
-    # ========================================================
+    # ============================================================
 
     def __new__(cls):
 
         if cls._instance is None:
 
-            cls._instance = super().__new__(cls)
+            with cls._instance_lock:
 
-            cls._instance._loaded = False
+                if cls._instance is None:
+
+                    cls._instance = super().__new__(cls)
+
+                    cls._instance._initialized = False
+                    cls._instance._model_loaded = False
 
         return cls._instance
 
-    # ========================================================
+    # ============================================================
     # Initialization
-    # ========================================================
+    # ============================================================
 
     def __init__(self):
 
-        if self._loaded:
+        if self._initialized:
             return
 
+        # --------------------------------------------------------
+        # Lightweight attributes only.
+        #
+        # DO NOT load SentenceTransformer here.
+        # --------------------------------------------------------
+
+        self.model = None
+
+        self.job_embeddings = None
+        self.job_metadata = None
+        self.job_tfidf_matrix = None
+
+        self.interview_embeddings = None
+        self.interview_metadata = None
+
+        self.vectorizer = None
+
+        self._model_loaded = False
+
+        self._initialized = True
+
         print("==============================================")
-        print("Starting TalentMatch AI prediction engine...")
+        print("TalentMatch AI prediction engine initialized.")
+        print("Model loading deferred until first prediction.")
         print("==============================================")
 
-        # ----------------------------------------------------
-        # Force CPU inference
-        # ----------------------------------------------------
-        #
-        # Render Free does not provide a GPU.
-        #
-        # DEVICE should normally be "cpu" in config.py.
-        #
+    # ============================================================
+    # Configure PyTorch
+    # ============================================================
 
-        print("Inference device:", DEVICE)
+    @staticmethod
+    def _configure_torch():
 
-        # ====================================================
-        # Sentence Transformer
-        # ====================================================
+        """
+        Restrict PyTorch CPU threading.
 
-        print("Loading embedding model...")
+        This is important on Render Free because excessive
+        thread creation can increase memory consumption.
+        """
 
-        self.model = SentenceTransformer(
-            EMBEDDING_MODEL,
-            device=DEVICE
-        )
+        try:
 
-        # Disable training behavior.
+            import torch
 
-        self.model.eval()
+            torch.set_num_threads(1)
 
-        # ====================================================
-        # Job Embeddings
-        # ====================================================
+            try:
+                torch.set_num_interop_threads(1)
+            except RuntimeError:
+                # PyTorch may reject this if parallel work
+                # has already started. It is safe to continue.
+                pass
 
-        print("Loading job embeddings...")
+        except Exception as exc:
 
-        loaded_jobs = np.load(
-            JOB_EMBEDDINGS,
-            allow_pickle=False
-        )
-
-        job_embeddings = loaded_jobs["embeddings"]
-
-        # ----------------------------------------------------
-        # Runtime representation
-        # ----------------------------------------------------
-        #
-        # Your stored embeddings are float16.
-        #
-        # That is excellent for disk/RAM storage.
-        #
-        # For CPU similarity calculations we convert only
-        # the small job matrix to float32.
-        #
-
-        if job_embeddings.dtype != np.float32:
-
-            job_embeddings = job_embeddings.astype(
-                np.float32
+            print(
+                "Warning: could not configure PyTorch threads:",
+                repr(exc)
             )
 
-        self.job_embeddings = job_embeddings
+    # ============================================================
+    # Lazy Model Loading
+    # ============================================================
 
-        del loaded_jobs
-        del job_embeddings
+    def _load_model(self):
 
-        # ====================================================
-        # Job Metadata
-        # ====================================================
+        """
+        Load all prediction artifacts exactly once.
 
-        print("Loading job metadata...")
+        This method is called only when an actual prediction
+        is required.
+        """
 
-        self.job_metadata = pd.read_parquet(
-            JOB_METADATA
-        )
+        if self._model_loaded:
+            return
 
-        # Normalize metadata column names.
+        with self._instance_lock:
 
-        self.job_metadata.columns = [
-            str(column)
-            .strip()
-            .lower()
-            for column in self.job_metadata.columns
-        ]
+            if self._model_loaded:
+                return
 
-        # ====================================================
-        # Interview Embeddings
-        # ====================================================
+            print("==============================================")
+            print("Loading TalentMatch AI prediction artifacts...")
+            print("==============================================")
 
-        print("Loading interview embeddings...")
+            # ----------------------------------------------------
+            # Configure CPU
+            # ----------------------------------------------------
 
-        loaded_interviews = np.load(
-            INTERVIEW_EMBEDDINGS,
+            self._configure_torch()
+
+            # ----------------------------------------------------
+            # Force CPU
+            # ----------------------------------------------------
+
+            device = "cpu"
+
+            print(
+                "Configured inference device:",
+                device
+            )
+
+            # ====================================================
+            # Sentence Transformer
+            # ====================================================
+
+            print(
+                "Loading embedding model:",
+                EMBEDDING_MODEL
+            )
+
+            from sentence_transformers import SentenceTransformer
+
+            self.model = SentenceTransformer(
+                EMBEDDING_MODEL,
+                device=device
+            )
+
+            self.model.eval()
+
+            print("Embedding model loaded.")
+
+            # ====================================================
+            # Job Embeddings
+            # ====================================================
+
+            print("Loading job embeddings...")
+
+            self.job_embeddings = self._load_embeddings(
+                JOB_EMBEDDINGS
+            )
+
+            print(
+                "Job embeddings shape:",
+                self.job_embeddings.shape
+            )
+
+            # ====================================================
+            # Job Metadata
+            # ====================================================
+
+            print("Loading job metadata...")
+
+            self.job_metadata = pd.read_parquet(
+                JOB_METADATA
+            )
+
+            self.job_metadata.columns = [
+                str(column).strip().lower()
+                for column in self.job_metadata.columns
+            ]
+
+            # ----------------------------------------------------
+            # Make sure embedding count and metadata count match.
+            # ----------------------------------------------------
+
+            if len(self.job_embeddings) != len(
+                self.job_metadata
+            ):
+
+                raise RuntimeError(
+                    "Job embedding count does not match "
+                    "job metadata count."
+                )
+
+            print(
+                "Job metadata rows:",
+                len(self.job_metadata)
+            )
+
+            # ====================================================
+            # TF-IDF Vectorizer
+            # ====================================================
+
+            print("Loading TF-IDF vectorizer...")
+
+            self.vectorizer = joblib.load(
+                TFIDF_MODEL
+            )
+
+            # ====================================================
+            # Build TF-IDF Matrix
+            # ====================================================
+
+            print("Building TF-IDF job matrix...")
+
+            self.job_tfidf_matrix = (
+                self._build_job_tfidf_matrix()
+            )
+
+            # ====================================================
+            # Interview Embeddings
+            # ====================================================
+
+            print("Loading interview embeddings...")
+
+            self.interview_embeddings = (
+                self._load_embeddings(
+                    INTERVIEW_EMBEDDINGS
+                )
+            )
+
+            print(
+                "Interview embeddings shape:",
+                self.interview_embeddings.shape
+            )
+
+            # ====================================================
+            # Interview Metadata
+            # ====================================================
+
+            print("Loading interview metadata...")
+
+            self.interview_metadata = pd.read_parquet(
+                INTERVIEW_METADATA
+            )
+
+            self.interview_metadata.columns = [
+                str(column).strip().lower()
+                for column in self.interview_metadata.columns
+            ]
+
+            if len(
+                self.interview_embeddings
+            ) != len(
+                self.interview_metadata
+            ):
+
+                raise RuntimeError(
+                    "Interview embedding count does not "
+                    "match interview metadata count."
+                )
+
+            print(
+                "Interview metadata rows:",
+                len(self.interview_metadata)
+            )
+
+            # ====================================================
+            # Cleanup
+            # ====================================================
+
+            gc.collect()
+
+            self._model_loaded = True
+
+            print("==============================================")
+            print("TalentMatch AI prediction engine ready.")
+            print("==============================================")
+
+    # ============================================================
+    # Load Embeddings Efficiently
+    # ============================================================
+
+    @staticmethod
+    def _load_embeddings(path):
+        """
+        Load embeddings while preserving float16 storage.
+
+        Supports both:
+
+            .npy
+
+        and:
+
+            .npz
+
+        formats.
+
+        Stored embeddings remain float16 to reduce RAM.
+        """
+
+        path = str(path)
+
+        # --------------------------------------------------------
+        # NPY
+        # --------------------------------------------------------
+
+        if path.lower().endswith(".npy"):
+
+            embeddings = np.load(
+                path,
+                mmap_mode="r",
+                allow_pickle=False
+            )
+
+            return embeddings
+
+        # --------------------------------------------------------
+        # NPZ
+        # --------------------------------------------------------
+
+        loaded = np.load(
+            path,
             allow_pickle=False
         )
 
-        interview_embeddings = (
-            loaded_interviews["embeddings"]
-        )
+        try:
 
-        # ----------------------------------------------------
-        # IMPORTANT MEMORY DECISION
-        # ----------------------------------------------------
-        #
-        # Your interview matrix is:
-        #
-        #   14,817 × 384
-        #
-        # Stored as float16:
-        #
-        #   ~10.85 MB
-        #
-        # Keeping it as float16 saves RAM.
-        #
-        # NumPy dot products can operate using the compact
-        # representation without creating a permanent
-        # float32 copy.
-        #
+            if "embeddings" in loaded.files:
 
-        self.interview_embeddings = interview_embeddings
+                embeddings = loaded["embeddings"]
 
-        del loaded_interviews
-        del interview_embeddings
+            elif len(loaded.files) == 1:
 
-        # ====================================================
-        # Interview Metadata
-        # ====================================================
+                embeddings = loaded[
+                    loaded.files[0]
+                ]
 
-        print("Loading interview metadata...")
+            else:
 
-        self.interview_metadata = pd.read_parquet(
-            INTERVIEW_METADATA
-        )
+                raise RuntimeError(
+                    f"No 'embeddings' array found in {path}."
+                )
 
-        # Normalize column names.
+            # ----------------------------------------------------
+            # Ensure compact dtype.
+            # ----------------------------------------------------
 
-        self.interview_metadata.columns = [
-            str(column)
-            .strip()
-            .lower()
-            for column in self.interview_metadata.columns
-        ]
+            if embeddings.dtype != np.float16:
 
-        # ====================================================
-        # TF-IDF Vectorizer
-        # ====================================================
+                embeddings = embeddings.astype(
+                    np.float16,
+                    copy=False
+                )
 
-        print("Loading TF-IDF vectorizer...")
+            # ----------------------------------------------------
+            # Make a compact contiguous array only when needed.
+            # ----------------------------------------------------
 
-        self.vectorizer = joblib.load(
-            TFIDF_MODEL
-        )
+            return embeddings
 
-        # ====================================================
-        # Build TF-IDF Job Matrix
-        # ====================================================
+        finally:
 
-        print("Building TF-IDF job index...")
+            loaded.close()
 
-        preferred_columns = [
+    # ============================================================
+    # Build TF-IDF Matrix
+    # ============================================================
+
+    def _build_job_tfidf_matrix(self):
+
+        preferred_columns = (
             "category",
             "description",
             "requirements",
             "benefits",
-        ]
+        )
 
-        text_columns = [
+        available = [
             column
             for column in preferred_columns
             if column in self.job_metadata.columns
         ]
 
-        if text_columns:
+        if not available:
 
-            job_documents = (
-                self.job_metadata[
-                    text_columns
-                ]
-                .fillna("")
-                .astype(str)
-                .agg(
-                    " ".join,
-                    axis=1
-                )
-                .tolist()
+            available = list(
+                self.job_metadata.columns
             )
 
-        else:
+        # --------------------------------------------------------
+        # There are only 325 jobs.
+        #
+        # Building the documents once at startup is inexpensive.
+        # --------------------------------------------------------
 
-            job_documents = (
-                self.job_metadata
-                .fillna("")
-                .astype(str)
-                .agg(
-                    " ".join,
-                    axis=1
-                )
-                .tolist()
+        documents = []
+
+        for row in self.job_metadata[
+            available
+        ].itertuples(
+            index=False,
+            name=None
+        ):
+
+            parts = []
+
+            for value in row:
+
+                if value is not None:
+
+                    parts.append(
+                        str(value)
+                    )
+
+            documents.append(
+                " ".join(parts)
             )
 
-        # Build sparse TF-IDF matrix.
-
-        self.job_tfidf_matrix = (
-            self.vectorizer.transform(
-                job_documents
-            )
+        matrix = self.vectorizer.transform(
+            documents
         )
 
-        # Temporary list no longer required.
-
-        del job_documents
-
-        # ====================================================
-        # Skills
-        # ====================================================
-
-        print("Loading skill database...")
-
-        try:
-
-            with gzip.open(
-                SKILLS,
-                "rt",
-                encoding="utf-8"
-            ) as f:
-
-                self.skills = set(
-                    json.load(f)
-                )
-
-        except Exception as exc:
-
-            # Skills are supplementary to matching.
-            #
-            # Do not prevent the entire API from starting
-            # if the optional skill database has an issue.
-
-            print(
-                "Warning: skill database could not be loaded:",
-                exc
-            )
-
-            self.skills = set()
-
-        # ====================================================
-        # Cleanup
-        # ====================================================
+        del documents
 
         gc.collect()
 
-        # ====================================================
-        # Ready
-        # ====================================================
+        return matrix
 
-        self._loaded = True
+    # ============================================================
+    # Public Readiness
+    # ============================================================
 
-        print("==============================================")
-        print("TalentMatch AI prediction engine ready.")
-        print("==============================================")
+    def is_loaded(self):
 
+        return bool(
+            self._model_loaded
+            and self.model is not None
+        )
 
-    # ========================================================
+    # ============================================================
     # Embedding
-    # ========================================================
+    # ============================================================
 
     def embed(
         self,
         text: str
     ) -> np.ndarray:
+
         """
         Convert text into a normalized MiniLM embedding.
 
-        Returns:
-            float32 NumPy array
+        Returns
+        -------
+        numpy.ndarray
+            float32 normalized embedding.
         """
+
+        if text is None:
+
+            raise ValueError(
+                "Text cannot be None."
+            )
+
+        text = str(text).strip()
 
         if not text:
 
@@ -385,36 +564,63 @@ class PredictionEngine:
                 "Text cannot be empty."
             )
 
+        # --------------------------------------------------------
+        # Ensure model is loaded.
+        # --------------------------------------------------------
+
+        self._load_model()
+
+        # --------------------------------------------------------
+        # CPU inference.
+        # SentenceTransformer handles inference_mode/no_grad
+        # internally for encode().
+        # --------------------------------------------------------
+
         embedding = self.model.encode(
             text,
             normalize_embeddings=True,
             convert_to_numpy=True,
-            show_progress_bar=False
+            show_progress_bar=False,
+            batch_size=1
         )
 
-        return np.asarray(
+        # --------------------------------------------------------
+        # Ensure exactly float32.
+        # --------------------------------------------------------
+
+        embedding = np.asarray(
             embedding,
             dtype=np.float32
         )
 
+        return embedding
 
-    # ========================================================
+    # ============================================================
     # Efficient Top-K
-    # ========================================================
+    # ============================================================
 
     @staticmethod
     def _top_indices(
         scores: np.ndarray,
         top_k: int
     ) -> np.ndarray:
-        """
-        Return indices of the top-k scores.
 
-        Uses argpartition rather than sorting the entire
-        array. This reduces unnecessary CPU work.
+        """
+        Return indices of highest-scoring items.
+
+        Uses argpartition instead of sorting the complete array.
         """
 
-        total = len(scores)
+        if scores is None:
+
+            return np.empty(
+                0,
+                dtype=np.int64
+            )
+
+        total = int(
+            scores.shape[0]
+        )
 
         if total == 0:
 
@@ -424,12 +630,16 @@ class PredictionEngine:
             )
 
         top_k = min(
-            max(1, int(top_k)),
+            max(
+                1,
+                int(top_k)
+            ),
             total
         )
 
-        # If requesting nearly everything, full sorting
-        # is acceptable and simpler.
+        # --------------------------------------------------------
+        # Small dataset optimization.
+        # --------------------------------------------------------
 
         if top_k >= total:
 
@@ -437,35 +647,46 @@ class PredictionEngine:
                 scores
             )[::-1]
 
+        # --------------------------------------------------------
+        # Partial selection.
+        # --------------------------------------------------------
+
         indices = np.argpartition(
             scores,
             -top_k
         )[-top_k:]
 
-        indices = indices[
-            np.argsort(
-                scores[indices]
-            )[::-1]
-        ]
+        # --------------------------------------------------------
+        # Sort only selected elements.
+        # --------------------------------------------------------
 
-        return indices
+        order = np.argsort(
+            scores[indices]
+        )[::-1]
 
+        return indices[order]
 
-    # ========================================================
+    # ============================================================
     # Semantic Job Search
-    # ========================================================
+    # ============================================================
 
     def semantic_job_search(
         self,
         resume_text: str,
         top_k: int = TOP_K_JOBS
     ):
+
         """
-        Perform semantic job matching.
+        Perform semantic-only job matching.
         """
 
+        self._load_model()
+
         top_k = min(
-            max(1, int(top_k)),
+            max(
+                1,
+                int(top_k)
+            ),
             TOP_K_JOBS
         )
 
@@ -473,19 +694,11 @@ class PredictionEngine:
             resume_text
         )
 
-        # ----------------------------------------------------
-        # Embeddings are normalized.
+        # --------------------------------------------------------
+        # Stored embeddings are normalized.
         #
-        # Therefore:
-        #
-        # cosine_similarity(A, B)
-        #
-        # is equivalent to:
-        #
-        # A @ B.T
-        #
-        # This avoids sklearn temporary matrices.
-        # ----------------------------------------------------
+        # cosine similarity = dot product
+        # --------------------------------------------------------
 
         scores = np.dot(
             self.job_embeddings,
@@ -510,37 +723,39 @@ class PredictionEngine:
             results.append({
 
                 "score": round(
-                    float(scores[idx]),
+                    float(
+                        scores[idx]
+                    ),
                     4
                 ),
 
-                "category": str(
+                "category": self._safe_value(
                     row.get(
                         "category",
                         ""
                     )
                 ),
 
-                "description": str(
+                "description": self._safe_value(
                     row.get(
                         "description",
                         ""
                     )
                 ),
 
-                "requirements": str(
+                "requirements": self._safe_value(
                     row.get(
                         "requirements",
                         ""
                     )
                 ),
 
-                "benefits": str(
+                "benefits": self._safe_value(
                     row.get(
                         "benefits",
                         ""
                     )
-                )
+                ),
             })
 
         del query
@@ -550,101 +765,99 @@ class PredictionEngine:
 
         return results
 
-
-    # ========================================================
+    # ============================================================
     # TF-IDF Scores
-    # ========================================================
+    # ============================================================
 
     def tfidf_scores(
         self,
         resume_text: str
     ):
+
         """
-        Calculate lexical similarity between the resume
-        and all available jobs.
+        Calculate lexical similarity against all jobs.
         """
+
+        self._load_model()
 
         query = self.vectorizer.transform(
-            [resume_text]
+            [str(resume_text)]
         )
 
-        # ----------------------------------------------------
-        # TF-IDF vectors are normally L2 normalized by the
-        # sklearn TfidfVectorizer.
-        #
-        # Therefore dot product is sufficient for cosine
-        # similarity and avoids sklearn overhead.
-        # ----------------------------------------------------
-
         scores = (
-            self.job_tfidf_matrix @ query.T
+            self.job_tfidf_matrix
+            @ query.T
         ).toarray().ravel()
 
         del query
 
         return scores
 
-
-    # ========================================================
+    # ============================================================
     # Hybrid Job Search
-    # ========================================================
+    # ============================================================
 
     def hybrid_job_search(
         self,
         resume_text: str,
         top_k: int = TOP_K_JOBS
     ):
+
         """
-        Combine semantic and keyword similarity.
+        Combine semantic and TF-IDF similarity.
 
-        Final score:
-
-            semantic × SEMANTIC_WEIGHT
+        final_score =
+            semantic_score * SEMANTIC_WEIGHT
             +
-            TF-IDF × TFIDF_WEIGHT
+            tfidf_score * TFIDF_WEIGHT
         """
+
+        self._load_model()
 
         top_k = min(
-            max(1, int(top_k)),
+            max(
+                1,
+                int(top_k)
+            ),
             TOP_K_JOBS
         )
 
-        # ====================================================
-        # Semantic Similarity
-        # ====================================================
+        # ========================================================
+        # Semantic similarity
+        # ========================================================
 
-        semantic = self.embed(
+        query = self.embed(
             resume_text
         )
 
         semantic_scores = np.dot(
             self.job_embeddings,
-            semantic
+            query
         )
 
-        # ====================================================
-        # TF-IDF Similarity
-        # ====================================================
+        # ========================================================
+        # TF-IDF similarity
+        # ========================================================
 
         lexical_scores = self.tfidf_scores(
             resume_text
         )
 
-        # ====================================================
-        # Hybrid Score
-        # ====================================================
+        # ========================================================
+        # Hybrid score
+        # ========================================================
 
         final_scores = (
             semantic_scores
-            * SEMANTIC_WEIGHT
+            * float(SEMANTIC_WEIGHT)
             +
             lexical_scores
-            * TFIDF_WEIGHT
+            * float(TFIDF_WEIGHT)
         )
 
-        # ====================================================
+        # ========================================================
         # Top-K
-        # ====================================================
+        # ========================================================
 
         indices = self._top_indices(
             final_scores,
@@ -684,40 +897,40 @@ class PredictionEngine:
                     4
                 ),
 
-                "category": str(
+                "category": self._safe_value(
                     row.get(
                         "category",
                         ""
                     )
                 ),
 
-                "description": str(
+                "description": self._safe_value(
                     row.get(
                         "description",
                         ""
                     )
                 ),
 
-                "requirements": str(
+                "requirements": self._safe_value(
                     row.get(
                         "requirements",
                         ""
                     )
                 ),
 
-                "benefits": str(
+                "benefits": self._safe_value(
                     row.get(
                         "benefits",
                         ""
                     )
-                )
+                ),
             })
 
-        # ====================================================
+        # ========================================================
         # Cleanup
-        # ====================================================
+        # ========================================================
 
-        del semantic
+        del query
         del semantic_scores
         del lexical_scores
         del final_scores
@@ -726,23 +939,28 @@ class PredictionEngine:
 
         return jobs
 
-
-    # ========================================================
+    # ============================================================
     # Interview Question Retrieval
-    # ========================================================
+    # ============================================================
 
     def interview_questions(
         self,
         resume_text: str,
         top_k: int = TOP_K_INTERVIEWS
     ):
+
         """
         Retrieve interview questions most relevant
         to the candidate's resume.
         """
 
+        self._load_model()
+
         top_k = min(
-            max(1, int(top_k)),
+            max(
+                1,
+                int(top_k)
+            ),
             TOP_K_INTERVIEWS
         )
 
@@ -750,14 +968,13 @@ class PredictionEngine:
             resume_text
         )
 
-        # ----------------------------------------------------
-        # Stored interview vectors are normalized.
+        # --------------------------------------------------------
+        # Interview embeddings:
         #
-        # Dot product = cosine similarity.
+        # 14,817 × 384 float16
         #
-        # Keeping them in float16 avoids an unnecessary
-        # ~22 MB float32 permanent copy.
-        # ----------------------------------------------------
+        # Only the temporary score vector is float32.
+        # --------------------------------------------------------
 
         scores = np.dot(
             self.interview_embeddings,
@@ -788,47 +1005,47 @@ class PredictionEngine:
                     4
                 ),
 
-                "question": str(
+                "question": self._safe_value(
                     row.get(
                         "question",
                         ""
                     )
                 ),
 
-                "answer": str(
+                "answer": self._safe_value(
                     row.get(
                         "answer",
                         ""
                     )
                 ),
 
-                "role": str(
+                "role": self._safe_value(
                     row.get(
                         "role",
                         ""
                     )
                 ),
 
-                "category": str(
+                "category": self._safe_value(
                     row.get(
                         "category",
                         ""
                     )
                 ),
 
-                "difficulty": str(
+                "difficulty": self._safe_value(
                     row.get(
                         "difficulty",
                         ""
                     )
                 ),
 
-                "experience": str(
+                "experience": self._safe_value(
                     row.get(
                         "experience",
                         ""
                     )
-                )
+                ),
             })
 
         del query
@@ -838,9 +1055,45 @@ class PredictionEngine:
 
         return questions
 
+    # ============================================================
+    # Safe Metadata Conversion
+    # ============================================================
 
-# ============================================================
+    @staticmethod
+    def _safe_value(value):
+
+        """
+        Convert pandas NaN/None into clean strings.
+        """
+
+        if value is None:
+
+            return ""
+
+        try:
+
+            if pd.isna(value):
+
+                return ""
+
+        except Exception:
+
+            pass
+
+        return str(value)
+
+
+# ================================================================
 # Global Singleton
-# ============================================================
+# ================================================================
+
+# IMPORTANT:
+#
+# This creates only the lightweight engine object.
+#
+# It DOES NOT load SentenceTransformer here.
+#
+# The model is loaded on the first actual prediction request.
+# ================================================================
 
 engine = PredictionEngine()
