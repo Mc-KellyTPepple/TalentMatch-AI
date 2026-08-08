@@ -3,27 +3,27 @@ TalentMatch AI
 Resume Parser
 
 Responsibilities:
-• Parse PDF resumes using pypdf
-• Parse DOCX resumes using python-docx
-• Parse TXT resumes
-• Validate file types
-• Clean extracted text
-• Provide useful errors
-• Designed for Render Free / 512 MB RAM
+- Parse PDF resumes using pypdf
+- Parse DOCX resumes using python-docx
+- Parse TXT resumes
+- Validate file types
+- Clean extracted text
+- Provide useful errors
+- Designed for Render Free / 512 MB RAM
 
 Supported:
-    PDF
-    DOCX
-    TXT
+- PDF
+- DOCX
+- TXT
 
 PDF engine:
-    pypdf
+- pypdf
 
 DOCX engine:
-    python-docx
+- python-docx
 
 IMPORTANT:
-    This file does NOT use PyMuPDF / fitz.
+This file does NOT use PyMuPDF / fitz.
 """
 
 from __future__ import annotations
@@ -44,7 +44,6 @@ class ResumeParsingError(Exception):
     """
     Raised when a resume cannot be parsed.
     """
-
     pass
 
 
@@ -68,10 +67,10 @@ def clean_text(text: str) -> str:
     Clean extracted resume text.
 
     Removes:
-    • Null characters
-    • Excess whitespace
-    • Repeated blank lines
-    • Unnecessary spacing
+    - Null characters
+    - Excess whitespace
+    - Repeated blank lines
+    - Unnecessary spacing
 
     Returns:
         Clean readable text.
@@ -80,53 +79,34 @@ def clean_text(text: str) -> str:
     if not text:
         return ""
 
-    # --------------------------------------------------------
-    # Null characters
-    # --------------------------------------------------------
-
+    # Remove null characters
     text = text.replace("\x00", " ")
 
-    # --------------------------------------------------------
     # Normalize line endings
-    # --------------------------------------------------------
-
     text = text.replace("\r\n", "\n")
     text = text.replace("\r", "\n")
 
-    # --------------------------------------------------------
     # Normalize non-breaking spaces
-    # --------------------------------------------------------
-
     text = text.replace("\xa0", " ")
 
-    # --------------------------------------------------------
     # Normalize spaces and tabs
-    # --------------------------------------------------------
-
     text = re.sub(
         r"[ \t]+",
         " ",
         text,
     )
 
-    # --------------------------------------------------------
     # Remove excessive blank lines
-    # --------------------------------------------------------
-
     text = re.sub(
         r"\n\s*\n\s*\n+",
         "\n\n",
         text,
     )
 
-    # --------------------------------------------------------
     # Clean individual lines
-    # --------------------------------------------------------
-
     lines = []
 
     for line in text.split("\n"):
-
         line = line.strip()
 
         if line:
@@ -159,7 +139,6 @@ def parse_pdf(file_bytes: bytes) -> str:
     """
 
     if not file_bytes:
-
         raise ResumeParsingError(
             "The PDF file is empty."
         )
@@ -173,23 +152,21 @@ def parse_pdf(file_bytes: bytes) -> str:
         # ----------------------------------------------------
 
         if not file_bytes.startswith(b"%PDF"):
-
             raise ResumeParsingError(
                 "The uploaded file is not a valid PDF. "
                 "Please upload a genuine PDF resume."
             )
 
         # ----------------------------------------------------
-        # Load PDF entirely in memory
+        # Load PDF from memory
         # ----------------------------------------------------
 
-        pdf_stream = io.BytesIO(
-            file_bytes
-        )
+        pdf_stream = io.BytesIO(file_bytes)
 
         # ----------------------------------------------------
         # IMPORTANT:
-        # This is pypdf.
+        #
+        # This uses pypdf.
         #
         # There is deliberately NO:
         #
@@ -198,16 +175,13 @@ def parse_pdf(file_bytes: bytes) -> str:
         #
         # ----------------------------------------------------
 
-        reader = PdfReader(
-            pdf_stream
-        )
+        reader = PdfReader(pdf_stream)
 
         # ----------------------------------------------------
         # Check encrypted PDF
         # ----------------------------------------------------
 
         if reader.is_encrypted:
-
             raise ResumeParsingError(
                 "This PDF is password protected. "
                 "Please upload an unlocked PDF resume."
@@ -217,8 +191,7 @@ def parse_pdf(file_bytes: bytes) -> str:
         # Check pages
         # ----------------------------------------------------
 
-        if not reader.pages:
-
+        if len(reader.pages) == 0:
             raise ResumeParsingError(
                 "The PDF does not contain any pages."
             )
@@ -245,7 +218,6 @@ def parse_pdf(file_bytes: bytes) -> str:
                     )
 
                     if page_text:
-
                         extracted_pages.append(
                             page_text
                         )
@@ -258,7 +230,7 @@ def parse_pdf(file_bytes: bytes) -> str:
                     f"{repr(exc)}"
                 )
 
-                # Continue with other pages.
+                # Continue with other pages
                 continue
 
         # ----------------------------------------------------
@@ -289,7 +261,6 @@ def parse_pdf(file_bytes: bytes) -> str:
         return text
 
     except ResumeParsingError:
-
         raise
 
     except Exception as exc:
@@ -325,8 +296,8 @@ def parse_docx(file_bytes: bytes) -> str:
     Extract text from a DOCX resume.
 
     Includes:
-    • Paragraphs
-    • Tables
+    - Paragraphs
+    - Tables
 
     Parameters:
         file_bytes:
@@ -389,9 +360,7 @@ def parse_docx(file_bytes: bytes) -> str:
 
                 for cell in row.cells:
 
-                    cell_text = (
-                        cell.text.strip()
-                    )
+                    cell_text = cell.text.strip()
 
                     if cell_text:
 
@@ -431,7 +400,6 @@ def parse_docx(file_bytes: bytes) -> str:
         return text
 
     except ResumeParsingError:
-
         raise
 
     except Exception as exc:
@@ -531,7 +499,7 @@ def parse_resume(
 
     Parameters:
         file_bytes:
-            Uploaded file bytes.
+            Uploaded resume bytes.
 
         filename:
             Original uploaded filename.
@@ -631,7 +599,7 @@ def parser_status():
     """
     Return parser availability information.
 
-    Useful for deployment diagnostics.
+    Useful for diagnostics.
     """
 
     return {
