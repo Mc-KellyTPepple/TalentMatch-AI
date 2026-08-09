@@ -2,30 +2,34 @@
 TalentMatch AI
 Job Ranking and Result Formatting Engine
 
-Responsibilities:
-    - Convert raw prediction scores to percentages
-    - Determine match levels
-    - Explain matching signals
-    - Rank jobs
-    - Build candidate summary
-    - Format interview questions
+Responsibilities
+----------------
+• Convert raw prediction scores to percentages
+• Determine match levels
+• Explain matching signals
+• Rank jobs
+• Build candidate summary
+• Format interview questions
 
-IMPORTANT:
-    This module DOES NOT load ML models.
+IMPORTANT
+---------
+This module DOES NOT load ML models.
 
-    All expensive AI operations happen inside
-    PredictionEngine.hybrid_job_search() and
-    PredictionEngine.interview_questions().
+All expensive AI operations happen inside:
+
+    PredictionEngine.hybrid_job_search()
+    PredictionEngine.interview_questions()
 
 Designed for:
     Render Free
     512 MB RAM
     CPU inference
 
-Diagnostic mode:
-    Every major operation is timed and printed to the
-    Render log so that slow prediction operations can
-    be identified precisely.
+Diagnostic mode
+---------------
+Every major operation is timed and printed to the
+Render log so slow prediction operations can be
+identified precisely.
 """
 
 from typing import Any, Dict, List
@@ -45,7 +49,8 @@ def _log(message: str, *args: Any) -> None:
     Print a timestamped diagnostic message.
 
     Uses f-string formatting correctly so Render logs
-    contain the actual values rather than literal %s/%f.
+    contain actual values rather than literal formatting
+    placeholders.
     """
 
     elapsed = time.perf_counter() - _MODULE_START
@@ -72,19 +77,21 @@ _log("ranking_engine.py imported successfully.")
 # SCORE UTILITIES
 # ============================================================
 
-def clamp_score(
-    score: float
-) -> float:
+def clamp_score(score: float) -> float:
+    """
+    Clamp a score into the [0, 1] interval.
+    """
 
     try:
-
         value = float(score)
 
     except (
         TypeError,
         ValueError,
     ):
+        value = 0.0
 
+    if value != value:  # NaN
         value = 0.0
 
     return max(
@@ -96,9 +103,11 @@ def clamp_score(
     )
 
 
-def score_to_percentage(
-    score: float
-) -> int:
+def score_to_percentage(score: float) -> int:
+    """
+    Convert a normalized score in [0, 1]
+    into an integer percentage.
+    """
 
     return int(
         round(
@@ -107,13 +116,13 @@ def score_to_percentage(
     )
 
 
-def get_match_level(
-    score: float
-) -> str:
+def get_match_level(score: float) -> str:
+    """
+    Convert a normalized score into a human-readable
+    match category.
+    """
 
-    percentage = score_to_percentage(
-        score
-    )
+    percentage = score_to_percentage(score)
 
     if percentage >= 85:
         return "Excellent Match"
@@ -139,23 +148,20 @@ def explain_score(
     tfidf_score: float,
     final_score: float,
 ) -> Dict[str, Any]:
+    """
+    Explain the semantic, keyword and final matching signals.
+    """
 
-    semantic_percentage = (
-        score_to_percentage(
-            semantic_score
-        )
+    semantic_percentage = score_to_percentage(
+        semantic_score
     )
 
-    tfidf_percentage = (
-        score_to_percentage(
-            tfidf_score
-        )
+    tfidf_percentage = score_to_percentage(
+        tfidf_score
     )
 
-    final_percentage = (
-        score_to_percentage(
-            final_score
-        )
+    final_percentage = score_to_percentage(
+        final_score
     )
 
     strengths = []
@@ -212,12 +218,82 @@ def explain_score(
 
 
 # ============================================================
+# SAFE TEXT
+# ============================================================
+
+def _safe_text(
+    value: Any,
+) -> str:
+    """
+    Convert arbitrary values into safe strings.
+
+    Handles:
+        None
+        NaN
+        numbers
+        strings
+    """
+
+    if value is None:
+        return ""
+
+    try:
+
+        if value != value:
+            return ""
+
+    except Exception:
+        pass
+
+    return str(value)
+
+
+# ============================================================
+# SAFE LIST
+# ============================================================
+
+def _safe_list(
+    value: Any,
+) -> List[Any]:
+    """
+    Ensure list-like backend fields are returned safely.
+    """
+
+    if value is None:
+        return []
+
+    if isinstance(value, list):
+        return value
+
+    if isinstance(value, tuple):
+        return list(value)
+
+    return [value]
+
+
+# ============================================================
 # RANK SINGLE JOB
 # ============================================================
 
 def rank_job(
     job: Dict[str, Any]
 ) -> Dict[str, Any]:
+    """
+    Convert one raw PredictionEngine result into the
+    frontend-ready job structure.
+
+    Expected raw PredictionEngine fields:
+
+        score
+        semantic_score
+        tfidf_score
+        category
+        description
+        requirements
+        benefits
+
+    Additional fields are preserved where available.
+    """
 
     if not isinstance(
         job,
@@ -225,9 +301,12 @@ def rank_job(
     ):
 
         job = {
-            "category":
-                str(job)
+            "category": str(job)
         }
+
+    # --------------------------------------------------------
+    # Extract scores
+    # --------------------------------------------------------
 
     semantic_score = job.get(
         "semantic_score",
@@ -245,40 +324,57 @@ def rank_job(
     )
 
     try:
+
         semantic_score = float(
             semantic_score
         )
+
     except (
         TypeError,
         ValueError,
     ):
+
         semantic_score = 0.0
 
     try:
+
         tfidf_score = float(
             tfidf_score
         )
+
     except (
         TypeError,
         ValueError,
     ):
+
         tfidf_score = 0.0
 
     try:
+
         final_score = float(
             final_score
         )
+
     except (
         TypeError,
         ValueError,
     ):
+
         final_score = 0.0
+
+    # --------------------------------------------------------
+    # Explain score
+    # --------------------------------------------------------
 
     explanation = explain_score(
         semantic_score,
         tfidf_score,
         final_score,
     )
+
+    # --------------------------------------------------------
+    # Format result
+    # --------------------------------------------------------
 
     return {
 
@@ -303,7 +399,7 @@ def rank_job(
             ],
 
         "category":
-            str(
+            _safe_text(
                 job.get(
                     "category",
                     job.get(
@@ -314,7 +410,7 @@ def rank_job(
             ),
 
         "title":
-            str(
+            _safe_text(
                 job.get(
                     "title",
                     "",
@@ -322,7 +418,7 @@ def rank_job(
             ),
 
         "description":
-            str(
+            _safe_text(
                 job.get(
                     "description",
                     "",
@@ -330,7 +426,7 @@ def rank_job(
             ),
 
         "requirements":
-            str(
+            _safe_text(
                 job.get(
                     "requirements",
                     "",
@@ -338,7 +434,7 @@ def rank_job(
             ),
 
         "benefits":
-            str(
+            _safe_text(
                 job.get(
                     "benefits",
                     "",
@@ -350,29 +446,38 @@ def rank_job(
                 "strengths"
             ],
 
-        # Preserve useful backend fields if they exist.
+        # ----------------------------------------------------
+        # Optional skill information.
+        # ----------------------------------------------------
+
         "matched_skills":
-            job.get(
-                "matched_skills",
+            _safe_list(
                 job.get(
-                    "matching_skills",
-                    [],
-                ),
+                    "matched_skills",
+                    job.get(
+                        "matching_skills",
+                        [],
+                    ),
+                )
             ),
 
         "missing_skills":
-            job.get(
-                "missing_skills",
+            _safe_list(
                 job.get(
-                    "skills_to_develop",
-                    [],
-                ),
+                    "missing_skills",
+                    job.get(
+                        "skills_to_develop",
+                        [],
+                    ),
+                )
             ),
 
         "skill_details":
-            job.get(
-                "skill_details",
-                [],
+            _safe_list(
+                job.get(
+                    "skill_details",
+                    [],
+                )
             ),
     }
 
@@ -385,17 +490,27 @@ def rank_jobs(
     jobs: List[Dict[str, Any]],
     top_k: int = 10,
 ) -> List[Dict[str, Any]]:
+    """
+    Rank and format multiple jobs.
+
+    This function performs NO ML inference.
+    """
 
     start = time.perf_counter()
 
     _log(
         "rank_jobs() started. Raw jobs received: {}",
-        len(jobs) if isinstance(
+        len(jobs)
+        if isinstance(
             jobs,
             list,
         )
         else "invalid",
     )
+
+    # --------------------------------------------------------
+    # Validate input
+    # --------------------------------------------------------
 
     if not jobs:
 
@@ -418,7 +533,7 @@ def rank_jobs(
         return []
 
     # --------------------------------------------------------
-    # Rank jobs
+    # Rank each job
     # --------------------------------------------------------
 
     ranked = []
@@ -452,7 +567,7 @@ def rank_jobs(
     )
 
     # --------------------------------------------------------
-    # Limit
+    # Validate top_k
     # --------------------------------------------------------
 
     try:
@@ -506,6 +621,9 @@ def rank_jobs(
 def build_candidate_summary(
     ranked_jobs: List[Dict[str, Any]]
 ) -> Dict[str, Any]:
+    """
+    Build a lightweight summary from ranked jobs.
+    """
 
     if not ranked_jobs:
 
@@ -584,6 +702,14 @@ def analyze_jobs(
     resume_text: str,
     top_k: int = 10,
 ) -> Dict[str, Any]:
+    """
+    Run hybrid job search through PredictionEngine,
+    then format and rank the results.
+
+    ML inference happens ONLY inside:
+
+        prediction_engine.hybrid_job_search()
+    """
 
     start = time.perf_counter()
 
@@ -618,9 +744,9 @@ def analyze_jobs(
         "=================================================="
     )
 
-    # --------------------------------------------------------
-    # Validate resume
-    # --------------------------------------------------------
+    # ========================================================
+    # VALIDATE RESUME
+    # ========================================================
 
     if not resume_text:
 
@@ -628,9 +754,19 @@ def analyze_jobs(
             "Resume text cannot be empty."
         )
 
-    # --------------------------------------------------------
-    # Check prediction engine
-    # --------------------------------------------------------
+    resume_text = str(
+        resume_text
+    ).strip()
+
+    if not resume_text:
+
+        raise ValueError(
+            "Resume text cannot be empty."
+        )
+
+    # ========================================================
+    # VALIDATE ENGINE
+    # ========================================================
 
     if prediction_engine is None:
 
@@ -638,11 +774,19 @@ def analyze_jobs(
             "Prediction engine is None."
         )
 
-    # --------------------------------------------------------
+    if not hasattr(
+        prediction_engine,
+        "hybrid_job_search",
+    ):
+
+        raise RuntimeError(
+            "Prediction engine does not provide "
+            "hybrid_job_search()."
+        )
+
+    # ========================================================
     # HYBRID SEARCH
-    #
-    # THIS IS THE MOST IMPORTANT DIAGNOSTIC SECTION.
-    # --------------------------------------------------------
+    # ========================================================
 
     _log(
         "Calling prediction_engine.hybrid_job_search()..."
@@ -702,9 +846,9 @@ def analyze_jobs(
         hybrid_elapsed,
     )
 
-    # --------------------------------------------------------
-    # Inspect returned predictions
-    # --------------------------------------------------------
+    # ========================================================
+    # NORMALIZE PREDICTION RESULT
+    # ========================================================
 
     if predictions is None:
 
@@ -740,11 +884,9 @@ def analyze_jobs(
         len(predictions),
     )
 
-    # --------------------------------------------------------
-    # Show first result structure
-    #
-    # This is useful for detecting mismatched field names.
-    # --------------------------------------------------------
+    # ========================================================
+    # INSPECT FIRST RESULT
+    # ========================================================
 
     if predictions:
 
@@ -769,9 +911,9 @@ def analyze_jobs(
                 type(first).__name__,
             )
 
-    # --------------------------------------------------------
-    # Rank results
-    # --------------------------------------------------------
+    # ========================================================
+    # RANK RESULTS
+    # ========================================================
 
     _log(
         "Starting rank_jobs()..."
@@ -794,9 +936,9 @@ def analyze_jobs(
         ranking_elapsed,
     )
 
-    # --------------------------------------------------------
-    # Candidate summary
-    # --------------------------------------------------------
+    # ========================================================
+    # CANDIDATE SUMMARY
+    # ========================================================
 
     _log(
         "Building candidate summary..."
@@ -820,9 +962,9 @@ def analyze_jobs(
         summary_elapsed,
     )
 
-    # --------------------------------------------------------
-    # Complete
-    # --------------------------------------------------------
+    # ========================================================
+    # COMPLETE
+    # ========================================================
 
     total_elapsed = (
         time.perf_counter()
@@ -873,6 +1015,11 @@ def format_interview_questions(
     questions: List[Dict[str, Any]],
     top_k: int = 5,
 ) -> List[Dict[str, Any]]:
+    """
+    Format raw PredictionEngine interview results.
+
+    No ML inference occurs here.
+    """
 
     start = time.perf_counter()
 
@@ -888,8 +1035,6 @@ def format_interview_questions(
 
         return []
 
-    formatted = []
-
     try:
 
         limit = max(
@@ -903,6 +1048,8 @@ def format_interview_questions(
     ):
 
         limit = 5
+
+    formatted = []
 
     for position, question in enumerate(
         questions[:limit],
@@ -943,39 +1090,51 @@ def format_interview_questions(
                 ),
 
             "question":
-                question.get(
-                    "question",
-                    "",
+                _safe_text(
+                    question.get(
+                        "question",
+                        "",
+                    )
                 ),
 
             "ideal_answer":
-                question.get(
-                    "answer",
-                    "",
+                _safe_text(
+                    question.get(
+                        "answer",
+                        "",
+                    )
                 ),
 
             "role":
-                question.get(
-                    "role",
-                    "",
+                _safe_text(
+                    question.get(
+                        "role",
+                        "",
+                    )
                 ),
 
             "category":
-                question.get(
-                    "category",
-                    "",
+                _safe_text(
+                    question.get(
+                        "category",
+                        "",
+                    )
                 ),
 
             "difficulty":
-                question.get(
-                    "difficulty",
-                    "",
+                _safe_text(
+                    question.get(
+                        "difficulty",
+                        "",
+                    )
                 ),
 
             "experience":
-                question.get(
-                    "experience",
-                    "",
+                _safe_text(
+                    question.get(
+                        "experience",
+                        "",
+                    )
                 ),
         })
 
