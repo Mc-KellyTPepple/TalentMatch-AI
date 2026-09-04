@@ -39,6 +39,7 @@ joblib==1.4.2
 
 sentence-transformers==3.3.1
 transformers==4.47.1
+--extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.5.1
 
 # ------------------------------------------------------------
