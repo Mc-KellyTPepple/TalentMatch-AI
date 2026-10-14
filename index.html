@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="TalentMatch AI - Intelligent resume and job matching powered by AI.">
+
+    <title>TalentMatch AI | Intelligent Hiring</title>
+
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+
+    <meta property="og:title" content="TalentMatch AI | Intelligent Hiring">
+    <meta property="og:description" content="AI-powered resume screening and job matching platform using semantic AI and keyword analysis.">
+    <meta property="og:image" content="https://talentmatch-ai-1-gcn6.onrender.com/static/og-image.png">
+    <meta property="og:url" content="https://talentmatch-ai-1-gcn6.onrender.com/">
+    <meta property="og:type" content="website">
+
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+
+<!-- =========================================================
+     NAVIGATION
+========================================================= -->
+<header class="navbar">
+    <div class="brand">
+        <div class="brand-icon">TM</div>
+        <div>
+            <div class="brand-name">TalentMatch AI</div>
+            <div class="brand-tagline">Intelligent Talent Matching</div>
+        </div>
+    </div>
+    <div class="nav-status">
+        <span class="status-dot"></span>
+        AI Matching Engine Online
+    </div>
+</header>
+
+
+<!-- =========================================================
+     HERO SECTION
+========================================================= -->
+<section class="hero">
+    <div class="hero-content">
+        <div class="eyebrow">AI-POWERED RECRUITMENT</div>
+        <h1>
+            Find the right opportunities
+            <span>faster.</span>
+        </h1>
+        <p class="hero-description">
+            Upload your CV and TalentMatch AI will read your skills and experience, suggest the career roles that fit you best,
+            show what to learn next, and match you to current live job openings.
+        </p>
+
+        <div class="hero-features">
+            <div class="feature">
+                <span>✓</span> Live Job Matching
+            </div>
+            <div class="feature">
+                <span>✓</span> Skill-Gap &amp; Career Path
+            </div>
+            <div class="feature">
+                <span>✓</span> Interview Preparation
+            </div>
+        </div>
+    </div>
+</section>
+
+
+<!-- =========================================================
+     MAIN APPLICATION
+========================================================= -->
+<main class="container">
+
+    <!-- UPLOAD CARD -->
+    <section class="upload-card">
+        <div class="section-header">
+            <div>
+                <h2>Analyze your CV</h2>
+                <p>Upload your CV to discover the roles that fit you and the openings available now.</p>
+            </div>
+            <div class="ai-badge">AI</div>
+        </div>
+
+        <!-- Upload Area -->
+        <form id="resumeForm" enctype="multipart/form-data">
+            <label for="resume" class="upload-area" id="uploadArea">
+                <div class="upload-icon">↑</div>
+                <h3>Drop your CV here</h3>
+                <p>or click to browse your computer</p>
+                <div class="supported-formats">
+                    PDF · DOCX · TXT
+                    <span>Maximum 10 MB</span>
+                </div>
+                <input
+                    type="file"
+                    id="resume"
+                    name="resume"
+                    accept=".pdf,.docx,.txt"
+                    hidden
+                    required
+                >
+            </label>
+
+            <!-- Selected File -->
+            <div id="selectedFile" class="selected-file hidden">
+                <div class="file-icon">📄</div>
+                <div class="file-information">
+                    <strong id="fileName">Resume</strong>
+                    <span id="fileSize">0 KB</span>
+                </div>
+                <button type="button" id="removeFile" class="remove-file">×</button>
+            </div>
+
+            <!-- Preferences -->
+            <div class="preferences">
+                <div class="pref-field">
+                    <label for="country">Where are you based or able to work? <span class="optional">(optional)</span></label>
+                    <input type="text" id="country" name="country" maxlength="60" placeholder="e.g. Nigeria" autocomplete="country-name">
+                    <small>Used to flag jobs with location restrictions.</small>
+                </div>
+                <div class="pref-checks">
+                    <label><input type="checkbox" id="remoteOnly"> Remote jobs only</label>
+                    <label><input type="checkbox" id="onlyEligible"> Hide jobs I probably can't apply to</label>
+                    <label><input type="checkbox" id="useAi" checked> Use AI re-ranking when available</label>
+                </div>
+            </div>
+
+            <!-- Analyze Button -->
+            <button type="submit" id="analyzeButton" class="analyze-button">
+                <span id="buttonText">Analyze My CV</span>
+                <span id="buttonLoader" class="button-loader hidden"></span>
+            </button>
+        </form>
+
+        <!-- Error -->
+        <div id="errorMessage" class="error-message hidden"></div>
+        <p class="privacy-note">Your CV is analysed in memory and is not stored.</p>
+    </section>
+
+
+    <!-- LOADING STATE -->
+    <section id="loadingSection" class="loading-section hidden">
+        <div class="loading-spinner"></div>
+        <h3>TalentMatch AI is analyzing your CV</h3>
+        <p>The first request after a quiet period can take up to a minute while the free server wakes up.</p>
+
+        <div class="loading-steps">
+            <div class="loading-step active">
+                <span>1</span> Reading your CV
+            </div>
+            <div class="loading-step">
+                <span>2</span> Matching roles and skills
+            </div>
+            <div class="loading-step">
+                <span>3</span> Scanning live vacancies
+            </div>
+        </div>
+    </section>
+
+
+    <!-- RESULTS SECTION -->
+    <section id="resultsSection" class="results-section hidden">
+        <div class="results-header">
+            <div>
+                <div class="eyebrow">ANALYSIS COMPLETE</div>
+                <h2>Your Career Match Report</h2>
+                <p id="reportMeta">Based on the CV you uploaded.</p>
+            </div>
+            <button type="button" id="newAnalysis" class="secondary-button">Analyze Another CV</button>
+        </div>
+
+        <div id="noticesContainer" class="notices"></div>
+
+        <!-- SUMMARY CARDS -->
+        <div class="summary-grid">
+            <div class="summary-card">
+                <div class="summary-label">YOUR LEVEL</div>
+                <div id="profileLevel" class="summary-value small">-</div>
+                <div id="profileExperience" class="summary-description"></div>
+            </div>
+            <div class="summary-card highlight">
+                <div class="summary-label">BEST ROLE FIT</div>
+                <div id="bestRoleFit" class="summary-value">0%</div>
+                <div id="bestRoleName" class="summary-description"></div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-label">LIVE JOBS MATCHED</div>
+                <div id="jobsMatched" class="summary-value">0</div>
+                <div id="jobsScanned" class="summary-description"></div>
+            </div>
+        </div>
+
+        <!-- PROFILE -->
+        <div class="panel">
+            <h3>Skills found on your CV</h3>
+            <div id="skillChips" class="chips"></div>
+        </div>
+
+        <!-- ROLES -->
+        <div class="results-heading">
+            <div>
+                <h3>Career roles that fit you</h3>
+                <p>Ranked by skill coverage, job-title evidence and wording similarity.</p>
+            </div>
+        </div>
+        <div id="rolesContainer" class="jobs-container"></div>
+
+        <!-- LEARN NEXT -->
+        <div id="learnSection" class="panel hidden">
+            <h3>Skills to learn next</h3>
+            <p class="panel-sub">Missing skills that appear most across your best-fitting roles.</p>
+            <div id="learnChips" class="chips learn"></div>
+        </div>
+
+        <!-- LIVE JOBS -->
+        <div class="results-heading">
+            <div>
+                <h3>Live job openings that match</h3>
+                <p id="jobsSubtitle">Current vacancies from public job feeds, ranked against your CV.</p>
+            </div>
+        </div>
+        <div id="jobsContainer" class="jobs-container"></div>
+        <p class="attribution">
+            Live listings courtesy of <a href="https://remotive.com" target="_blank" rel="noopener noreferrer">Remotive</a>
+            and <a href="https://www.arbeitnow.com" target="_blank" rel="noopener noreferrer">Arbeitnow</a>.
+            Always confirm details and eligibility on the original listing.
+        </p>
+
+        <!-- CV TIPS -->
+        <div id="tipsSection" class="panel hidden">
+            <h3>Quick wins to strengthen your CV</h3>
+            <ul id="tipsList" class="tips"></ul>
+        </div>
+
+        <!-- INTERVIEW SECTION -->
+        <div id="interviewSection" class="interview-section hidden">
+            <div class="results-heading">
+                <div>
+                    <h3>Interview preparation</h3>
+                    <p>Practice questions for your best-fitting roles, built from the skills on your CV.</p>
+                </div>
+            </div>
+            <div id="interviewContainer" class="interview-container"></div>
+        </div>
+    </section>
+
+
+    <!-- PRODUCT VALUE SECTION -->
+    <section class="value-section">
+        <div class="value-header">
+            <div class="eyebrow">WHY TALENTMATCH AI</div>
+            <h2>More than keyword matching.</h2>
+            <p>TalentMatch AI combines several signals to give an honest view of where you fit and what to do next.</p>
+        </div>
+
+        <div class="value-grid">
+            <div class="value-card">
+                <div class="value-icon">AI</div>
+                <h3>Real, Current Openings</h3>
+                <p>Matches you against live vacancies from public job feeds instead of a fixed, outdated list.</p>
+            </div>
+
+            <div class="value-card">
+                <div class="value-icon">%</div>
+                <h3>Transparent Scores</h3>
+                <p>Every result shows the skills you match and the ones you are missing, so you can see why.</p>
+            </div>
+
+            <div class="value-card">
+                <div class="value-icon">↗</div>
+                <h3>Career Path Guidance</h3>
+                <p>See your level, the roles you can grow into, the skills to learn next and how to prepare for interviews.</p>
+            </div>
+        </div>
+    </section>
+
+</main>
+
+
+<!-- =========================================================
+     FOOTER
+========================================================= -->
+<footer class="footer">
+    <div>
+        <strong>TalentMatch AI</strong>
+        <span>Intelligent recruitment technology.</span>
+    </div>
+    <div class="footer-note">
+        Matches are compatibility estimates, not guarantees. Job data comes from third-party feeds and may change.
+    </div>
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
